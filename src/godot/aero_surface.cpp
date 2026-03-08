@@ -15,11 +15,17 @@ void AeroSurface::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_segments_per_meter"), &AeroSurface::get_segments_per_meter);
     ClassDB::bind_method(D_METHOD("set_wind_velocity", "wind"), &AeroSurface::set_wind_velocity);
     ClassDB::bind_method(D_METHOD("get_wind_velocity"), &AeroSurface::get_wind_velocity);
+    ClassDB::bind_method(D_METHOD("set_vlm_enabled", "enabled"), &AeroSurface::set_vlm_enabled);
+    ClassDB::bind_method(D_METHOD("is_vlm_enabled"), &AeroSurface::is_vlm_enabled);
+    ClassDB::bind_method(D_METHOD("set_debug_force_scale", "scale"), &AeroSurface::set_debug_force_scale);
+    ClassDB::bind_method(D_METHOD("get_debug_force_scale"), &AeroSurface::get_debug_force_scale);
     ClassDB::bind_method(D_METHOD("_generate_subsections"), &AeroSurface::_generate_subsections);
 
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_draw"), "set_debug_draw", "is_debug_draw");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "segments_per_meter"), "set_segments_per_meter", "get_segments_per_meter");
     ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "wind_velocity"), "set_wind_velocity", "get_wind_velocity");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "vlm_enabled"), "set_vlm_enabled", "is_vlm_enabled");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "debug_force_scale"), "set_debug_force_scale", "get_debug_force_scale");
 }
 
 void AeroSurface::set_debug_draw(bool p_debug) {
@@ -50,8 +56,24 @@ Vector3 AeroSurface::get_wind_velocity() const {
     return wind_velocity;
 }
 
+void AeroSurface::set_vlm_enabled(bool p_enabled) {
+    vlm_enabled = p_enabled;
+}
+
+bool AeroSurface::is_vlm_enabled() const {
+    return vlm_enabled;
+}
+
+void AeroSurface::set_debug_force_scale(double p_scale) {
+    debug_force_scale = p_scale;
+}
+
+double AeroSurface::get_debug_force_scale() const {
+    return debug_force_scale;
+}
+
 void AeroSurface::_on_component_ready() {
-    if (Engine::get_singleton()->is_editor_hint() || !Engine::get_singleton()->is_editor_hint()) {
+    if (debug_mesh_instance == nullptr) {
         debug_mesh_instance = memnew(MeshInstance3D);
         debug_mesh.instantiate();
         debug_material.instantiate();
@@ -100,7 +122,6 @@ void AeroSurface::_generate_subsections() {
     };
 
     Vector<Station> stations;
-    
     Station root;
     root.transform = Transform3D();
     root.chord = props->get_root_chord();
@@ -111,10 +132,8 @@ void AeroSurface::_generate_subsections() {
     for (int i = 0; i < sections.size(); i++) {
         Ref<WingSection> s = sections[i];
         if (s.is_null()) continue;
-
         current_tf.basis = current_tf.basis.rotated(Vector3(1, 0, 0), Math::deg_to_rad(s->get_dihedral_angle()));
         current_tf.origin += current_tf.basis.xform(Vector3(s->get_sweep_offset(), 0, s->get_span_offset()));
-
         Station st;
         st.transform = current_tf;
         st.chord = s->get_chord();
@@ -127,92 +146,147 @@ void AeroSurface::_generate_subsections() {
     for (int i = 0; i < stations.size() - 1; i++) {
         Station s1 = stations[i];
         Station s2 = stations[i+1];
-
         double segment_span = s1.transform.origin.distance_to(s2.transform.origin);
         int num_sub = (int)Math::round(segment_span * segments_per_meter);
         if (num_sub < 1) num_sub = 1;
-
         for (int j = 0; j < num_sub; j++) {
             double t1 = (double)j / num_sub;
             double t2 = (double)(j + 1) / num_sub;
-
             double cos_t1 = (1.0 - Math::cos(t1 * Math_PI)) * 0.5;
             double cos_t2 = (1.0 - Math::cos(t2 * Math_PI)) * 0.5;
             double cos_mid = (1.0 - Math::cos((t1 + t2) * 0.5 * Math_PI)) * 0.5;
-
             SubSection sub;
             sub.transform.origin = s1.transform.origin.lerp(s2.transform.origin, cos_mid);
             sub.transform.basis = s1.transform.basis.slerp(s2.transform.basis, cos_mid);
-            
             sub.chord = Math::lerp(s1.chord, s2.chord, cos_mid);
             sub.airfoil = (cos_mid < 0.5) ? s1.airfoil : s2.airfoil;
-
             double sub_span = segment_span * (cos_t2 - cos_t1);
             sub.area = sub_span * sub.chord;
-
             subsections.push_back(sub);
         }
     }
 }
 
-void AeroSurface::_update_debug_draw() {
-    if (debug_mesh.is_null() || !debug_draw) return;
-
-    debug_mesh->clear_surfaces();
-    if (subsections.size() == 0) return;
-
-    debug_mesh->surface_begin(Mesh::PRIMITIVE_LINES);
-    
-    double rho = 1.225;
-    double coeff_scale = 1.0; 
-
-    // Convert global wind to local space of AeroSurface
-    Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
-
+void AeroSurface::_update_vortices() {
+    vortices.clear();
     for (int i = 0; i < subsections.size(); i++) {
         const SubSection &sub = subsections[i];
-        
-        // --- Geometry ---
-        debug_mesh->surface_set_color(Color(0.5, 0.5, 0.5));
-        debug_mesh->surface_add_vertex(sub.transform.origin);
-        debug_mesh->surface_add_vertex(sub.transform.origin + sub.transform.basis.xform(Vector3(sub.chord, 0, 0)));
-        
-        debug_mesh->surface_set_color(Color(0.4, 0.4, 0.1));
-        debug_mesh->surface_add_vertex(sub.transform.origin);
-        debug_mesh->surface_add_vertex(sub.transform.origin + sub.transform.basis.xform(Vector3(0, 0.2, 0)));
+        Vortex v;
+        double panel_span = sub.area / sub.chord;
+        Vector3 local_left_tip(0.25 * sub.chord, 0, -0.5 * panel_span);
+        Vector3 local_right_tip(0.25 * sub.chord, 0, 0.5 * panel_span);
+        Vector3 local_collocation(0.75 * sub.chord, 0, 0);
+        Vector3 local_normal(0, 1, 0);
+        v.left_tip = sub.transform.xform(local_left_tip);
+        v.right_tip = sub.transform.xform(local_right_tip);
+        v.collocation_point = sub.transform.xform(local_collocation);
+        v.normal = sub.transform.basis.xform(local_normal).normalized();
+        v.span = panel_span;
+        vortices.push_back(v);
+    }
+}
 
-        // --- Actual Physics Coefficients ---
-        Vector3 local_vel = sub.transform.basis.xform_inv(local_wind_node);
-        double speed = local_vel.length();
-        if (speed > 0.1) {
-            double alpha = Math::atan2(-local_vel.y, -local_vel.x);
-            AeroInput in;
-            in.rho = rho;
-            in.speed = speed;
-            in.alpha = alpha;
-            in.area = sub.area;
-            in.chord = sub.chord;
-            AeroOutput out = flatplate_compute(in);
+Vector3 AeroSurface::_calculate_induced_velocity(const Vector3 &p_point, const Vector3 &p_v1, const Vector3 &p_v2, double p_gamma) const {
+    Vector3 r1 = p_point - p_v1;
+    Vector3 r2 = p_point - p_v2;
+    Vector3 r0 = r1 - r2;
+    Vector3 r1xr2 = r1.cross(r2);
+    double r1xr2_mag2 = r1xr2.length_squared();
+    const double epsilon2 = 1e-8; 
+    if (r1xr2_mag2 < epsilon2) return Vector3();
+    double r1_mag = r1.length();
+    double r2_mag = r2.length();
+    if (r1_mag < 1e-6 || r2_mag < 1e-6) return Vector3();
+    double term = (p_gamma / (4.0 * Math_PI)) * (r0.dot(r1 / r1_mag - r2 / r2_mag) / (r1xr2_mag2 + epsilon2));
+    return r1xr2 * term;
+}
 
-            double q = 0.5 * rho * speed * speed;
-            double Cl = out.lift / (q * sub.area);
-            double Cd = out.drag / (q * sub.area);
+Vector3 AeroSurface::_calculate_horseshoe_velocity(const Vector3 &p_point, const Vortex &p_vortex, double p_gamma, const Vector3 &p_wind_dir) const {
+    Vector3 v_induced;
+    v_induced += _calculate_induced_velocity(p_point, p_vortex.left_tip, p_vortex.right_tip, p_gamma);
+    const double DOWNSTREAM_DIST = 1000.0;
+    Vector3 trailing_left_end = p_vortex.left_tip + p_wind_dir * DOWNSTREAM_DIST;
+    Vector3 trailing_right_end = p_vortex.right_tip + p_wind_dir * DOWNSTREAM_DIST;
+    v_induced += _calculate_induced_velocity(p_point, trailing_left_end, p_vortex.left_tip, p_gamma);
+    v_induced += _calculate_induced_velocity(p_point, p_vortex.right_tip, trailing_right_end, p_gamma);
+    return v_induced;
+}
 
-            Vector3 local_wind_dir = local_vel.normalized();
-            Vector3 local_lift_dir = Vector3(-local_wind_dir.y, local_wind_dir.x, 0).normalized();
-            
-            Vector3 cl_vec = sub.transform.basis.xform(local_lift_dir * Cl * coeff_scale);
-            debug_mesh->surface_set_color(Color(0, 0.8, 1.0)); // Cyan Cl
-            debug_mesh->surface_add_vertex(sub.transform.origin);
-            debug_mesh->surface_add_vertex(sub.transform.origin + cl_vec);
-
-            Vector3 cd_vec = sub.transform.basis.xform(-local_wind_dir * Cd * coeff_scale);
-            debug_mesh->surface_set_color(Color(1.0, 0.2, 0.2)); // Red Cd
-            debug_mesh->surface_add_vertex(sub.transform.origin);
-            debug_mesh->surface_add_vertex(sub.transform.origin + cd_vec);
+void AeroSurface::_solve_vlm() {
+    if (vortices.size() == 0) return;
+    int N = vortices.size();
+    Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
+    Vector3 wind_dir = local_wind_node.normalized();
+    Vector<Vector<double>> A; Vector<double> b;
+    A.resize(N); b.resize(N);
+    for (int i = 0; i < N; i++) {
+        A.write[i].resize(N);
+        b.write[i] = -local_wind_node.dot(vortices[i].normal);
+        for (int j = 0; j < N; j++) {
+            Vector3 v_unit = _calculate_horseshoe_velocity(vortices[i].collocation_point, vortices[j], 1.0, wind_dir);
+            A.write[i].write[j] = v_unit.dot(vortices[i].normal);
         }
     }
-    
+    for (int i = 0; i < N; i++) {
+        int pivot = i;
+        for (int j = i + 1; j < N; j++) if (Math::abs(A[j][i]) > Math::abs(A[pivot][i])) pivot = j;
+        Vector<double> temp_row = A[i]; A.write[i] = A[pivot]; A.write[pivot] = temp_row;
+        double temp_b = b[i]; b.write[i] = b[pivot]; b.write[pivot] = temp_b;
+        if (Math::abs(A[i][i]) < 1e-12) continue;
+        for (int j = i + 1; j < N; j++) {
+            double factor = A[j][i] / A[i][i];
+            b.write[j] -= factor * b[i];
+            for (int k = i; k < N; k++) A.write[j].write[k] -= factor * A[i][k];
+        }
+    }
+    Vector<double> Gamma; Gamma.resize(N);
+    for (int i = N - 1; i >= 0; i--) {
+        double sum = 0;
+        for (int j = i + 1; j < N; j++) sum += A[i][j] * Gamma[j];
+        if (Math::abs(A[i][i]) > 1e-12) Gamma.write[i] = (b[i] - sum) / A[i][i];
+        else Gamma.write[i] = 0;
+    }
+    for (int i = 0; i < N; i++) vortices.write[i].circulation = Gamma[i];
+}
+
+void AeroSurface::_update_debug_draw() {
+    if (debug_mesh.is_null() || !debug_draw) return;
+    debug_mesh->clear_surfaces();
+    if (subsections.size() == 0) return;
+    debug_mesh->surface_begin(Mesh::PRIMITIVE_LINES);
+    Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
+    Vector3 wind_dir = local_wind_node.normalized();
+    for (int i = 0; i < subsections.size(); i++) {
+        const SubSection &sub = subsections[i];
+        debug_mesh->surface_set_color(Color(0.3, 0.3, 0.3));
+        debug_mesh->surface_add_vertex(sub.transform.origin);
+        debug_mesh->surface_add_vertex(sub.transform.origin + sub.transform.basis.xform(Vector3(sub.chord, 0, 0)));
+        if (vlm_enabled && i < vortices.size()) {
+            const Vortex &v = vortices[i];
+            debug_mesh->surface_set_color(Color(0.2, 0.2, 1.0));
+            debug_mesh->surface_add_vertex(v.left_tip);
+            debug_mesh->surface_add_vertex(v.right_tip);
+            debug_mesh->surface_set_color(Color(0.1, 0.1, 0.5));
+            debug_mesh->surface_add_vertex(v.left_tip);
+            debug_mesh->surface_add_vertex(v.left_tip + wind_dir * debug_vortex_scale);
+            debug_mesh->surface_add_vertex(v.right_tip);
+            debug_mesh->surface_add_vertex(v.right_tip + wind_dir * debug_vortex_scale);
+            Vector3 local_wind_dir_sub = sub.transform.basis.xform_inv(local_wind_node).normalized();
+            Vector3 local_lift_dir = Vector3(-local_wind_dir_sub.y, local_wind_dir_sub.x, 0).normalized();
+            debug_mesh->surface_set_color(Color(0, 1.0, 1.0)); 
+            debug_mesh->surface_add_vertex(sub.transform.origin);
+            debug_mesh->surface_add_vertex(sub.transform.origin + sub.transform.basis.xform(local_lift_dir * v.lift * debug_force_scale));
+        } else {
+            Vector3 local_wind_dir_sub = sub.transform.basis.xform_inv(local_wind_node).normalized();
+            Vector3 local_lift_dir = Vector3(-local_wind_dir_sub.y, local_wind_dir_sub.x, 0).normalized();
+            debug_mesh->surface_set_color(Color(0, 1.0, 1.0)); 
+            debug_mesh->surface_add_vertex(sub.transform.origin);
+            debug_mesh->surface_add_vertex(sub.transform.origin + sub.transform.basis.xform(local_lift_dir * sub.lift * debug_force_scale));
+            debug_mesh->surface_set_color(Color(1.0, 0.2, 0.2)); 
+            debug_mesh->surface_add_vertex(sub.transform.origin);
+            debug_mesh->surface_add_vertex(sub.transform.origin + sub.transform.basis.xform(-local_wind_dir_sub * sub.drag * debug_force_scale));
+        }
+    }
     debug_mesh->surface_end();
 }
 
@@ -221,29 +295,43 @@ void AeroSurface::physics_step(Variant p_state) {}
 Vector3 AeroSurface::compute_force(Variant p_state) {
     Vector3 total_force;
     double rho = 1.225;
-
-    // Convert global wind to local space of AeroSurface
     Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
-
+    double speed = local_wind_node.length();
+    if (vlm_enabled) {
+        _update_vortices();
+        _solve_vlm();
+        Vector3 wind_dir = local_wind_node.normalized();
+        for (int i = 0; i < vortices.size(); i++) {
+            Vortex &v = vortices.write[i];
+            Vector3 center = (v.left_tip + v.right_tip) * 0.5;
+            Vector3 v_induced_extra;
+            for (int j = 0; j < vortices.size(); j++) {
+                if (i == j) continue;
+                v_induced_extra += _calculate_horseshoe_velocity(center, vortices[j], vortices[j].circulation, wind_dir);
+            }
+            Vector3 v_local = local_wind_node + v_induced_extra;
+            Vector3 bound_vec = v.right_tip - v.left_tip;
+            Vector3 force = v_local.cross(bound_vec) * (rho * v.circulation);
+            v.lift = force.dot(v.normal);
+            v.cl = (speed > 0.1) ? (2.0 * v.circulation) / (speed * subsections[i].chord) : 0.0;
+            total_force += force;
+        }
+        return get_global_transform().basis.xform(total_force);
+    }
     for (int i = 0; i < subsections.size(); i++) {
-        const SubSection &sub = subsections[i];
+        SubSection &sub = subsections.write[i];
         Vector3 local_vel = sub.transform.basis.xform_inv(local_wind_node);
-        double speed = local_vel.length();
-        if (speed < 0.1) continue;
-
+        double speed_sub = local_vel.length();
+        if (speed_sub < 0.1) { sub.cl = 0; sub.cd = 0; sub.lift = 0; sub.drag = 0; continue; }
         double alpha = Math::atan2(-local_vel.y, -local_vel.x);
-        AeroInput in;
-        in.rho = rho;
-        in.speed = speed;
-        in.alpha = alpha;
-        in.area = sub.area;
-        in.chord = sub.chord;
-
+        AeroInput in; in.rho = rho; in.speed = speed_sub; in.alpha = alpha; in.area = sub.area; in.chord = sub.chord;
         AeroOutput out = flatplate_compute(in);
-        
+        double q = 0.5 * rho * speed_sub * speed_sub;
+        sub.cl = out.lift / (q * sub.area);
+        sub.cd = out.drag / (q * sub.area);
+        sub.lift = out.lift; sub.drag = out.drag;
         Vector3 local_wind_dir = local_vel.normalized();
         Vector3 local_lift_dir = Vector3(-local_wind_dir.y, local_wind_dir.x, 0).normalized();
-        
         Vector3 local_force = (local_lift_dir * out.lift) + (-local_wind_dir * out.drag);
         total_force += sub.transform.basis.xform(local_force);
     }
@@ -251,8 +339,8 @@ Vector3 AeroSurface::compute_force(Variant p_state) {
 }
 
 void AeroSurface::_process(double delta) {
-    // Redraw every frame to handle movement/rotation relative to global wind
     if (Engine::get_singleton()->is_editor_hint() || is_inside_tree()) {
+        compute_force(Variant());
         _update_debug_draw();
     }
 }

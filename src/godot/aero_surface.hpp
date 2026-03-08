@@ -20,19 +20,44 @@ protected:
         double area;
         double chord;
         Ref<AirfoilResource> airfoil;
+        double lift = 0.0;
+        double drag = 0.0;
+        double cl = 0.0;
+        double cd = 0.0;
     };
 
     Vector<SubSection> subsections;
     double segments_per_meter = 4.0;
     Vector3 wind_velocity = Vector3(20, 0, 0);
     bool debug_draw = true;
+    bool vlm_enabled = true;
+    double debug_force_scale = 0.001; 
+    double debug_vortex_scale = 0.5;
+
+    struct Vortex {
+        Vector3 left_tip;
+        Vector3 right_tip;
+        Vector3 collocation_point;
+        Vector3 normal;
+        double span;
+        double circulation = 0.0;
+        double lift = 0.0;
+        double cl = 0.0;
+    };
+
+    Vector<Vortex> vortices;
 
     MeshInstance3D *debug_mesh_instance = nullptr;
     Ref<ImmediateMesh> debug_mesh;
     Ref<StandardMaterial3D> debug_material;
 
     void _generate_subsections();
+    void _update_vortices();
+    void _solve_vlm();
     void _update_debug_draw();
+
+    Vector3 _calculate_induced_velocity(const Vector3 &p_point, const Vector3 &p_v1, const Vector3 &p_v2, double p_gamma) const;
+    Vector3 _calculate_horseshoe_velocity(const Vector3 &p_point, const Vortex &p_vortex, double p_gamma, const Vector3 &p_wind_dir) const;
 
 public:
     AeroSurface();
@@ -46,6 +71,12 @@ public:
 
     void set_wind_velocity(Vector3 p_wind);
     Vector3 get_wind_velocity() const;
+
+    void set_vlm_enabled(bool p_enabled);
+    bool is_vlm_enabled() const;
+
+    void set_debug_force_scale(double p_scale);
+    double get_debug_force_scale() const;
 
     void _on_component_ready() override;
     void physics_step(Variant p_state) override;
