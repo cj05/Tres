@@ -4,7 +4,6 @@
 using namespace godot;
 
 AeroGeometry::AeroGeometry() {
-    properties = Ref<AeroGeometryProperties>(memnew(AeroGeometryProperties));
 }
 
 AeroGeometry::~AeroGeometry() {}

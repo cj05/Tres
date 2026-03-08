@@ -1,4 +1,4 @@
-#include "godot/aero_body.hpp"
+#include "godot/aero_surface.hpp"
 #include "godot/modular_component.hpp"
 #include "godot/aero_component.hpp"
 #include "godot/part.hpp"
@@ -23,20 +23,28 @@ void initialize_aero(ModuleInitializationLevel level) {
         return;
     }
 
-    GDREGISTER_CLASS(AeroBody);
+    // Register Base Classes First
     GDREGISTER_CLASS(ModularComponent);
     GDREGISTER_CLASS(AeroComponent);
+    GDREGISTER_CLASS(AeroSurface);
+    
     GDREGISTER_CLASS(Part);
+    
     GDREGISTER_CLASS(TooledProperties);
+    GDREGISTER_CLASS(AeroGeometryProperties);
+    
     GDREGISTER_CLASS(GeometryComponent);
+    GDREGISTER_CLASS(AeroGeometry);
+    
     GDREGISTER_CLASS(CoefficientCurve);
     GDREGISTER_CLASS(AirfoilResource);
-    GDREGISTER_CLASS(AirfoilUtil);
-    GDREGISTER_CLASS(XFoilParser);
-    GDREGISTER_CLASS(CurvePrediction);
+    
+    // Utilities
+    GDREGISTER_ABSTRACT_CLASS(AirfoilUtil);
+    GDREGISTER_ABSTRACT_CLASS(XFoilParser);
+    GDREGISTER_ABSTRACT_CLASS(CurvePrediction);
+    
     GDREGISTER_CLASS(WingSection);
-    GDREGISTER_CLASS(AeroGeometryProperties);
-    GDREGISTER_CLASS(AeroGeometry);
 }
 
 void uninitialize_aero(ModuleInitializationLevel level) {

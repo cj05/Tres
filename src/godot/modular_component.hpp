@@ -1,11 +1,11 @@
 #pragma once
 
-#include <godot_cpp/classes/node.hpp>
+#include <godot_cpp/classes/node3d.hpp>
 
 namespace godot {
 
-class ModularComponent : public Node {
-    GDCLASS(ModularComponent, Node);
+class ModularComponent : public Node3D {
+    GDCLASS(ModularComponent, Node3D);
 
 protected:
     static void _bind_methods();

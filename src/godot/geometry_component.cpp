@@ -5,7 +5,6 @@
 using namespace godot;
 
 GeometryComponent::GeometryComponent() {
-    properties.instantiate();
 }
 
 GeometryComponent::~GeometryComponent() {}
@@ -24,11 +23,15 @@ void GeometryComponent::_bind_methods() {
 
 void GeometryComponent::set_properties(const Ref<TooledProperties> &p_properties) {
     if (properties.is_valid()) {
-        properties->disconnect("changed", Callable(this, "_notify_change"));
+        if (properties->is_connected("changed", Callable(this, "_notify_change"))) {
+            properties->disconnect("changed", Callable(this, "_notify_change"));
+        }
     }
     properties = p_properties;
     if (properties.is_valid()) {
-        properties->connect("changed", Callable(this, "_notify_change"));
+        if (!properties->is_connected("changed", Callable(this, "_notify_change"))) {
+            properties->connect("changed", Callable(this, "_notify_change"));
+        }
     }
     _notify_change();
 }
