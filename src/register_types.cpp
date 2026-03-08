@@ -1,4 +1,17 @@
 #include "godot/aero_body.hpp"
+#include "godot/modular_component.hpp"
+#include "godot/aero_component.hpp"
+#include "godot/part.hpp"
+#include "godot/tooled_properties.hpp"
+#include "godot/geometry_component.hpp"
+#include "godot/coefficient_curve.hpp"
+#include "godot/airfoil_resource.hpp"
+#include "godot/airfoil_util.hpp"
+#include "godot/xfoil_parser.hpp"
+#include "godot/curve_prediction.hpp"
+#include "godot/wing_section.hpp"
+#include "godot/aero_geometry_properties.hpp"
+#include "godot/aero_geometry.hpp"
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/godot.hpp>
@@ -11,6 +24,19 @@ void initialize_aero(ModuleInitializationLevel level) {
     }
 
     GDREGISTER_CLASS(AeroBody);
+    GDREGISTER_CLASS(ModularComponent);
+    GDREGISTER_CLASS(AeroComponent);
+    GDREGISTER_CLASS(Part);
+    GDREGISTER_CLASS(TooledProperties);
+    GDREGISTER_CLASS(GeometryComponent);
+    GDREGISTER_CLASS(CoefficientCurve);
+    GDREGISTER_CLASS(AirfoilResource);
+    GDREGISTER_CLASS(AirfoilUtil);
+    GDREGISTER_CLASS(XFoilParser);
+    GDREGISTER_CLASS(CurvePrediction);
+    GDREGISTER_CLASS(WingSection);
+    GDREGISTER_CLASS(AeroGeometryProperties);
+    GDREGISTER_CLASS(AeroGeometry);
 }
 
 void uninitialize_aero(ModuleInitializationLevel level) {
