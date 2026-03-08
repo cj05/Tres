@@ -12,11 +12,13 @@ VLMTester::~VLMTester() {}
 void VLMTester::_ready() {
     if (!Engine::get_singleton()->is_editor_hint()) {
         run_vlm_validation();
+        run_coherence_test();
     }
 }
 
 void VLMTester::_bind_methods() {
     ClassDB::bind_method(D_METHOD("run_vlm_validation"), &VLMTester::run_vlm_validation);
+    ClassDB::bind_method(D_METHOD("run_coherence_test"), &VLMTester::run_coherence_test);
 }
 
 void VLMTester::run_vlm_validation() {
@@ -105,4 +107,75 @@ void VLMTester::run_vlm_validation() {
     }
 
     UtilityFunctions::print("--- VLM Validation Test Finished ---");
+}
+
+void VLMTester::run_coherence_test() {
+    UtilityFunctions::print("--- Starting VLM Coherence Test ---");
+
+    const int panels_per_wing = 10;
+    const double span = 5.0;
+    const double chord = 1.0;
+    const double alpha_rad = Math::deg_to_rad(5.0);
+    const Vector3 wind_velocity(20.0 * Math::cos(alpha_rad), 20.0 * Math::sin(alpha_rad), 0.0);
+
+    // Setup Case 1: Two wings side-by-side (solved together)
+    Vector<VLMPanel> combined_panels;
+    // Wing 1 (Left: -5 to 0)
+    for (int i = 0; i < panels_per_wing; i++) {
+        VLMPanel p;
+        double y_start = -span + (span / panels_per_wing) * i;
+        double y_end = y_start + (span / panels_per_wing);
+        p.left_tip = Vector3(0.25 * chord, 0, y_start);
+        p.right_tip = Vector3(0.25 * chord, 0, y_end);
+        p.collocation_point = Vector3(0.75 * chord, 0, (y_start + y_end) * 0.5);
+        p.normal = Vector3(0, 1, 0);
+        combined_panels.push_back(p);
+    }
+    // Wing 2 (Right: 0 to 5)
+    for (int i = 0; i < panels_per_wing; i++) {
+        VLMPanel p;
+        double y_start = 0.0 + (span / panels_per_wing) * i;
+        double y_end = y_start + (span / panels_per_wing);
+        p.left_tip = Vector3(0.25 * chord, 0, y_start);
+        p.right_tip = Vector3(0.25 * chord, 0, y_end);
+        p.collocation_point = Vector3(0.75 * chord, 0, (y_start + y_end) * 0.5);
+        p.normal = Vector3(0, 1, 0);
+        combined_panels.push_back(p);
+    }
+
+    VLMSolver::solve(combined_panels, wind_velocity);
+
+    // Setup Case 2: One big wing (Span 10)
+    Vector<VLMPanel> single_panels;
+    for (int i = 0; i < panels_per_wing * 2; i++) {
+        VLMPanel p;
+        double y_start = -span + ( (span * 2.0) / (panels_per_wing * 2) ) * i;
+        double y_end = y_start + ( (span * 2.0) / (panels_per_wing * 2) );
+        p.left_tip = Vector3(0.25 * chord, 0, y_start);
+        p.right_tip = Vector3(0.25 * chord, 0, y_end);
+        p.collocation_point = Vector3(0.75 * chord, 0, (y_start + y_end) * 0.5);
+        p.normal = Vector3(0, 1, 0);
+        single_panels.push_back(p);
+    }
+
+    VLMSolver::solve(single_panels, wind_velocity);
+
+    // Comparison
+    bool match = true;
+    for (int i = 0; i < panels_per_wing * 2; i++) {
+        double g_combined = combined_panels[i].circulation;
+        double g_single = single_panels[i].circulation;
+        if (Math::abs(g_combined - g_single) > 1e-10) {
+            match = false;
+            UtilityFunctions::print("FAIL: Mismatch at panel ", i, ". Combined: ", g_combined, ", Single: ", g_single);
+        }
+    }
+
+    if (match) {
+        UtilityFunctions::print("PASS: Coherence check passed. Multi-section interaction is mathematically consistent.");
+    } else {
+        UtilityFunctions::print("FAIL: Multi-section interaction mismatch.");
+    }
+
+    UtilityFunctions::print("--- VLM Coherence Test Finished ---");
 }

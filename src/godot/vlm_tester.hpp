@@ -16,6 +16,7 @@ public:
 
     void _ready() override;
     void run_vlm_validation();
+    void run_coherence_test();
 };
 
 } // namespace godot
