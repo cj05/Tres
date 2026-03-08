@@ -1,4 +1,5 @@
 #include "godot/aero_surface.hpp"
+#include "godot/vlm_tester.hpp"
 #include "godot/modular_component.hpp"
 #include "godot/aero_component.hpp"
 #include "godot/part.hpp"
@@ -27,6 +28,7 @@ void initialize_aero(ModuleInitializationLevel level) {
     GDREGISTER_CLASS(ModularComponent);
     GDREGISTER_CLASS(AeroComponent);
     GDREGISTER_CLASS(AeroSurface);
+    GDREGISTER_CLASS(VLMTester);
     
     GDREGISTER_CLASS(Part);
     

@@ -1,7 +1,9 @@
 #include "aero_surface.hpp"
 #include "part.hpp"
+#include "aero/vlm_solver.hpp"
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
 
@@ -29,6 +31,7 @@ void AeroSurface::_bind_methods() {
 }
 
 void AeroSurface::set_debug_draw(bool p_debug) {
+    if (debug_draw == p_debug) return;
     debug_draw = p_debug;
     if (debug_mesh_instance) {
         debug_mesh_instance->set_visible(debug_draw);
@@ -40,6 +43,7 @@ bool AeroSurface::is_debug_draw() const {
 }
 
 void AeroSurface::set_segments_per_meter(double p_segments) {
+    if (Math::is_equal_approx(segments_per_meter, p_segments)) return;
     segments_per_meter = MAX(p_segments, 0.1);
     _generate_subsections();
 }
@@ -49,6 +53,7 @@ double AeroSurface::get_segments_per_meter() const {
 }
 
 void AeroSurface::set_wind_velocity(Vector3 p_wind) {
+    if (wind_velocity == p_wind) return;
     wind_velocity = p_wind;
 }
 
@@ -57,6 +62,7 @@ Vector3 AeroSurface::get_wind_velocity() const {
 }
 
 void AeroSurface::set_vlm_enabled(bool p_enabled) {
+    if (vlm_enabled == p_enabled) return;
     vlm_enabled = p_enabled;
 }
 
@@ -186,67 +192,28 @@ void AeroSurface::_update_vortices() {
     }
 }
 
-Vector3 AeroSurface::_calculate_induced_velocity(const Vector3 &p_point, const Vector3 &p_v1, const Vector3 &p_v2, double p_gamma) const {
-    Vector3 r1 = p_point - p_v1;
-    Vector3 r2 = p_point - p_v2;
-    Vector3 r0 = r1 - r2;
-    Vector3 r1xr2 = r1.cross(r2);
-    double r1xr2_mag2 = r1xr2.length_squared();
-    const double epsilon2 = 1e-8; 
-    if (r1xr2_mag2 < epsilon2) return Vector3();
-    double r1_mag = r1.length();
-    double r2_mag = r2.length();
-    if (r1_mag < 1e-6 || r2_mag < 1e-6) return Vector3();
-    double term = (p_gamma / (4.0 * Math_PI)) * (r0.dot(r1 / r1_mag - r2 / r2_mag) / (r1xr2_mag2 + epsilon2));
-    return r1xr2 * term;
-}
-
-Vector3 AeroSurface::_calculate_horseshoe_velocity(const Vector3 &p_point, const Vortex &p_vortex, double p_gamma, const Vector3 &p_wind_dir) const {
-    Vector3 v_induced;
-    v_induced += _calculate_induced_velocity(p_point, p_vortex.left_tip, p_vortex.right_tip, p_gamma);
-    const double DOWNSTREAM_DIST = 1000.0;
-    Vector3 trailing_left_end = p_vortex.left_tip + p_wind_dir * DOWNSTREAM_DIST;
-    Vector3 trailing_right_end = p_vortex.right_tip + p_wind_dir * DOWNSTREAM_DIST;
-    v_induced += _calculate_induced_velocity(p_point, trailing_left_end, p_vortex.left_tip, p_gamma);
-    v_induced += _calculate_induced_velocity(p_point, p_vortex.right_tip, trailing_right_end, p_gamma);
-    return v_induced;
-}
-
 void AeroSurface::_solve_vlm() {
     if (vortices.size() == 0) return;
-    int N = vortices.size();
+    
+    Vector<VLMPanel> panels;
+    for (int i = 0; i < vortices.size(); i++) {
+        const Vortex &v = vortices[i];
+        VLMPanel p;
+        p.left_tip = v.left_tip;
+        p.right_tip = v.right_tip;
+        p.collocation_point = v.collocation_point;
+        p.normal = v.normal;
+        p.area = subsections[i].area;
+        p.chord = subsections[i].chord;
+        panels.push_back(p);
+    }
+
     Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
-    Vector3 wind_dir = local_wind_node.normalized();
-    Vector<Vector<double>> A; Vector<double> b;
-    A.resize(N); b.resize(N);
-    for (int i = 0; i < N; i++) {
-        A.write[i].resize(N);
-        b.write[i] = -local_wind_node.dot(vortices[i].normal);
-        for (int j = 0; j < N; j++) {
-            Vector3 v_unit = _calculate_horseshoe_velocity(vortices[i].collocation_point, vortices[j], 1.0, wind_dir);
-            A.write[i].write[j] = v_unit.dot(vortices[i].normal);
-        }
+    VLMSolver::solve(panels, local_wind_node);
+
+    for (int i = 0; i < vortices.size(); i++) {
+        vortices.write[i].circulation = panels[i].circulation;
     }
-    for (int i = 0; i < N; i++) {
-        int pivot = i;
-        for (int j = i + 1; j < N; j++) if (Math::abs(A[j][i]) > Math::abs(A[pivot][i])) pivot = j;
-        Vector<double> temp_row = A[i]; A.write[i] = A[pivot]; A.write[pivot] = temp_row;
-        double temp_b = b[i]; b.write[i] = b[pivot]; b.write[pivot] = temp_b;
-        if (Math::abs(A[i][i]) < 1e-12) continue;
-        for (int j = i + 1; j < N; j++) {
-            double factor = A[j][i] / A[i][i];
-            b.write[j] -= factor * b[i];
-            for (int k = i; k < N; k++) A.write[j].write[k] -= factor * A[i][k];
-        }
-    }
-    Vector<double> Gamma; Gamma.resize(N);
-    for (int i = N - 1; i >= 0; i--) {
-        double sum = 0;
-        for (int j = i + 1; j < N; j++) sum += A[i][j] * Gamma[j];
-        if (Math::abs(A[i][i]) > 1e-12) Gamma.write[i] = (b[i] - sum) / A[i][i];
-        else Gamma.write[i] = 0;
-    }
-    for (int i = 0; i < N; i++) vortices.write[i].circulation = Gamma[i];
 }
 
 void AeroSurface::_update_debug_draw() {
@@ -303,15 +270,8 @@ Vector3 AeroSurface::compute_force(Variant p_state) {
         Vector3 wind_dir = local_wind_node.normalized();
         for (int i = 0; i < vortices.size(); i++) {
             Vortex &v = vortices.write[i];
-            Vector3 center = (v.left_tip + v.right_tip) * 0.5;
-            Vector3 v_induced_extra;
-            for (int j = 0; j < vortices.size(); j++) {
-                if (i == j) continue;
-                v_induced_extra += _calculate_horseshoe_velocity(center, vortices[j], vortices[j].circulation, wind_dir);
-            }
-            Vector3 v_local = local_wind_node + v_induced_extra;
             Vector3 bound_vec = v.right_tip - v.left_tip;
-            Vector3 force = v_local.cross(bound_vec) * (rho * v.circulation);
+            Vector3 force = local_wind_node.cross(bound_vec) * (rho * v.circulation);
             v.lift = force.dot(v.normal);
             v.cl = (speed > 0.1) ? (2.0 * v.circulation) / (speed * subsections[i].chord) : 0.0;
             total_force += force;
