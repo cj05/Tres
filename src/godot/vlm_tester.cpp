@@ -60,9 +60,11 @@ void VLMTester::run_vlm_validation() {
     for (int i = 0; i < num_panels / 2; i++) {
         double g1 = panels[i].circulation;
         double g2 = panels[num_panels - 1 - i].circulation;
-        if (Math::abs(g1 - g2) > 1e-10) {
+        double diff = Math::abs(g1 - g2);
+        if (diff > 1e-10) {
             symmetrical = false;
-            UtilityFunctions::print("FAIL: Asymmetry detected between panel ", i, " and ", num_panels-1-i);
+            UtilityFunctions::print("FAIL: Asymmetry at ", i, " vs ", num_panels-1-i, 
+                                    ". G1: ", g1, ", G2: ", g2, ", Diff: ", diff);
         }
     }
     if (symmetrical) UtilityFunctions::print("PASS: Symmetry check passed.");
@@ -78,7 +80,6 @@ void VLMTester::run_vlm_validation() {
     if (lift_trend_ok) UtilityFunctions::print("PASS: Lift distribution trend check passed.");
 
     // 3. Overall Lift Coefficient check (Approximate)
-    // CL = sum(L) / (0.5 * rho * V^2 * S)
     double total_gamma_span = 0;
     for (int i = 0; i < num_panels; i++) {
         total_gamma_span += panels[i].circulation * (span / num_panels);
@@ -86,7 +87,7 @@ void VLMTester::run_vlm_validation() {
     
     double rho = 1.225;
     double V = wind_velocity.length();
-    double total_lift = rho * V * total_gamma_span;
+    double total_lift = rho * V * Math::abs(total_gamma_span); // Ensure positive lift for comparison
     double CL = total_lift / (0.5 * rho * V * V * span * chord);
     
     // Theoretical 2D Cl = 2 * PI * alpha
