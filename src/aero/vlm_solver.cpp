@@ -27,14 +27,11 @@ void VLMSolver::solve(Vector<VLMPanel> &p_panels, const Vector3 &p_wind_velocity
     }
 
     // 2. Pre-conditioning: Row Scaling
-    // This helps significantly with ill-conditioned matrices from cosine spacing
     for (int i = 0; i < N; i++) {
         double diag = Math::abs(A[i * N + i]);
         if (diag > 1e-15) {
             double scale = 1.0 / A[i * N + i];
-            for (int j = 0; j < N; j++) {
-                A.write[i * N + j] *= scale;
-            }
+            for (int j = 0; j < N; j++) A.write[i * N + j] *= scale;
             b.write[i] *= scale;
         }
     }
@@ -45,40 +42,29 @@ void VLMSolver::solve(Vector<VLMPanel> &p_panels, const Vector3 &p_wind_velocity
         double max_val = Math::abs(A[i * N + i]);
         for (int j = i + 1; j < N; j++) {
             double val = Math::abs(A[j * N + i]);
-            if (val > max_val) {
-                max_val = val;
-                pivot = j;
-            }
+            if (val > max_val) { max_val = val; pivot = j; }
         }
-        
         if (pivot != i) {
             for (int k = 0; k < N; k++) {
                 double temp = A[i * N + k];
                 A.write[i * N + k] = A[pivot * N + k];
                 A.write[pivot * N + k] = temp;
             }
-            double temp_b = b[i];
-            b.write[i] = b[pivot];
-            b.write[pivot] = temp_b;
+            double temp_b = b[i]; b.write[i] = b[pivot]; b.write[pivot] = temp_b;
         }
-
-        if (Math::abs(A[i * N + i]) < 1e-20) continue;
-
+        if (Math::abs(A[i * N + i]) < 1e-25) continue;
         for (int j = i + 1; j < N; j++) {
             double factor = A[j * N + i] / A[i * N + i];
             b.write[j] -= factor * b[i];
-            for (int k = i; k < N; k++) {
-                A.write[j * N + k] -= factor * A[i * N + k];
-            }
+            for (int k = i; k < N; k++) A.write[j * N + k] -= factor * A[i * N + k];
         }
     }
 
-    Vector<double> x;
-    x.resize(N);
+    Vector<double> x; x.resize(N);
     for (int i = N - 1; i >= 0; i--) {
         double sum = 0;
         for (int j = i + 1; j < N; j++) sum += A[i * N + j] * x[j];
-        if (Math::abs(A[i * N + i]) > 1e-20) x.write[i] = (b[i] - sum) / A[i * N + i];
+        if (Math::abs(A[i * N + i]) > 1e-25) x.write[i] = (b[i] - sum) / A[i * N + i];
         else x.write[i] = 0;
     }
 
@@ -88,47 +74,40 @@ void VLMSolver::solve(Vector<VLMPanel> &p_panels, const Vector3 &p_wind_velocity
 Vector3 VLMSolver::_calculate_induced_velocity(const Vector3 &p_point, const Vector3 &p_v1, const Vector3 &p_v2, double p_gamma) {
     Vector3 r1 = p_point - p_v1;
     Vector3 r2 = p_point - p_v2;
-    Vector3 r1xr2 = r1.cross(r2);
+    Vector3 r1xr2 = r1.cross(r2); // Standard cross product
     double r1xr2_mag2 = r1xr2.length_squared();
 
-    Vector3 r0 = p_v2 - p_v1;
-    double r0_mag = r0.length();
-    
-    // Fixed core radius for numerical stability (1mm)
-    const double core_radius = 0.001; 
-    const double core_radius2 = core_radius * core_radius;
+    const double core_radius2 = 1e-8; // 0.1mm fixed core
 
     double r1_mag = r1.length();
     double r2_mag = r2.length();
-    
     if (r1_mag < 1e-12 || r2_mag < 1e-12) return Vector3();
 
-    double term = (p_gamma / (4.0 * Math_PI)) * (r0.dot(r1 / r1_mag - r2 / r2_mag));
-    // Softened distance denominator: |r1xr2|^2 + (rc * |r0|)^2
-    double denom = r1xr2_mag2 + (core_radius2 * r0_mag * r0_mag);
-
-    return r1xr2 * (term / (denom + 1e-18));
+    Vector3 r0 = p_v2 - p_v1;
+    double factor = (p_gamma / (4.0 * Math_PI)) * (r0.dot(r1 / r1_mag - r2 / r2_mag));
+    return r1xr2 * (factor / (r1xr2_mag2 + core_radius2));
 }
 
 Vector3 VLMSolver::_calculate_horseshoe_velocity(const Vector3 &p_point, const VLMPanel &p_panel, double p_gamma, const Vector3 &p_wind_dir) {
     Vector3 v_total;
 
-    // 1. Bound segment
+    // 1. Bound segment (Left -> Right)
     v_total += _calculate_induced_velocity(p_point, p_panel.left_tip, p_panel.right_tip, p_gamma);
 
     // 2. Trailing segments (Semi-infinite)
-    const double wake_core2 = 1e-6; // 1mm core for wake
-
     auto calculate_semi_infinite = [&](const Vector3 &P1, const Vector3 &D, double G) {
         Vector3 r1 = p_point - P1;
         Vector3 Dxr1 = D.cross(r1);
         double Dxr1_mag2 = Dxr1.length_squared();
         double r1_mag = r1.length();
         if (r1_mag < 1e-12) return Vector3();
-
-        return Dxr1 * ( (G / (4.0 * Math_PI)) * (1.0 + D.dot(r1) / r1_mag) / (Dxr1_mag2 + wake_core2) );
+        const double core_radius2 = 1e-8;
+        return Dxr1 * ( (G / (4.0 * Math_PI)) * (1.0 + D.dot(r1) / r1_mag) / (Dxr1_mag2 + core_radius2) );
     };
 
+    // Standard VLM convention:
+    // Left Trail: start at Left Tip, flow downstream with -G
+    // Right Trail: start at Right Tip, flow downstream with +G
     v_total += calculate_semi_infinite(p_panel.left_tip, p_wind_dir, -p_gamma);
     v_total += calculate_semi_infinite(p_panel.right_tip, p_wind_dir, p_gamma);
 
