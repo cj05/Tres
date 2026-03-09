@@ -13,6 +13,7 @@ void VLMTester::_ready() {
     if (!Engine::get_singleton()->is_editor_hint()) {
         run_vlm_validation();
         run_coherence_test();
+        run_cosine_spacing_test();
     }
 }
 
@@ -74,9 +75,9 @@ void VLMTester::run_vlm_validation() {
     // 2. Check lift distribution (should be highest at center)
     bool lift_trend_ok = true;
     for (int i = 0; i < num_panels / 2 - 1; i++) {
-        if (panels[i+1].circulation < panels[i].circulation - 1e-10) {
+        if (Math::abs(panels[i+1].circulation) < Math::abs(panels[i].circulation) - 1e-10) {
             lift_trend_ok = false;
-            UtilityFunctions::print("FAIL: Lift should increase towards center. Panel ", i+1, " gamma < Panel ", i);
+            UtilityFunctions::print("FAIL: Lift distribution trend. Panel ", i+1, " gamma magnitude < Panel ", i);
         }
     }
     if (lift_trend_ok) UtilityFunctions::print("PASS: Lift distribution trend check passed.");
@@ -178,4 +179,60 @@ void VLMTester::run_coherence_test() {
     }
 
     UtilityFunctions::print("--- VLM Coherence Test Finished ---");
+}
+
+void VLMTester::run_cosine_spacing_test() {
+    UtilityFunctions::print("--- Starting VLM Cosine Spacing Test ---");
+
+    const int num_panels = 20; 
+    const double span = 1.0;
+    const double chord = 1.0;
+    const double alpha_rad = Math::deg_to_rad(5.0);
+    const Vector3 wind_velocity(20.0 * Math::cos(alpha_rad), 20.0 * Math::sin(alpha_rad), 0.0);
+
+    Vector<VLMPanel> panels;
+    for (int i = 0; i < num_panels; i++) {
+        double t1 = (double)i / num_panels;
+        double t2 = (double)(i + 1) / num_panels;
+
+        double cos_t1 = (1.0 - Math::cos(t1 * Math_PI)) * 0.5;
+        double cos_t2 = (1.0 - Math::cos(t2 * Math_PI)) * 0.5;
+        double cos_mid = (1.0 - Math::cos((t1 + t2) * 0.5 * Math_PI)) * 0.5;
+
+        double y_start = -span/2.0 + span * cos_t1;
+        double y_end = -span/2.0 + span * cos_t2;
+        double y_mid = -span/2.0 + span * cos_mid;
+
+        VLMPanel p;
+        p.left_tip = Vector3(0.25 * chord, 0, y_start);
+        p.right_tip = Vector3(0.25 * chord, 0, y_end);
+        p.collocation_point = Vector3(0.75 * chord, 0, y_mid);
+        p.normal = Vector3(0, 1, 0);
+        p.area = (y_end - y_start) * chord;
+        p.chord = chord;
+        panels.push_back(p);
+    }
+
+    VLMSolver::solve(panels, wind_velocity);
+
+    bool symmetrical = true;
+    for (int i = 0; i < num_panels / 2; i++) {
+        double g1 = panels[i].circulation;
+        double g2 = panels[num_panels - 1 - i].circulation;
+        double diff = Math::abs(g1 - g2);
+        if (diff > 1e-10) {
+            symmetrical = false;
+            UtilityFunctions::print("FAIL: Cosine Asymmetry at ", i, ". Diff: ", diff);
+        }
+    }
+    if (symmetrical) UtilityFunctions::print("PASS: Cosine symmetry check passed.");
+
+    bool tips_sane = true;
+    if (Math::abs(panels[0].circulation) > Math::abs(panels[num_panels/2].circulation)) {
+        tips_sane = false;
+        UtilityFunctions::print("FAIL: Tip circulation (", panels[0].circulation, ") is larger than center (", panels[num_panels/2].circulation, ")");
+    }
+    if (tips_sane) UtilityFunctions::print("PASS: Tip behavior appears sane (no divergent spikes).");
+
+    UtilityFunctions::print("--- VLM Cosine Spacing Test Finished ---");
 }
