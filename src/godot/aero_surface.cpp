@@ -189,6 +189,9 @@ void AeroSurface::_update_vortices() {
         v.normal = sub.transform.basis.xform(local_normal).normalized();
         v.span = panel_span;
         vortices.push_back(v);
+
+        Vector3 span = (v.right_tip - v.left_tip).normalized();
+        UtilityFunctions::print("span ", i, ": ", span);
     }
 }
 
@@ -267,11 +270,17 @@ Vector3 AeroSurface::compute_force(Variant p_state) {
     if (vlm_enabled) {
         _update_vortices();
         _solve_vlm();
-        Vector3 wind_dir = local_wind_node.normalized();
         for (int i = 0; i < vortices.size(); i++) {
             Vortex &v = vortices.write[i];
+
+            Vector3 local_wind_sub = subsections[i].transform.basis.xform_inv(local_wind_node);
+
             Vector3 bound_vec = v.right_tip - v.left_tip;
-            Vector3 force = local_wind_node.cross(bound_vec) * (rho * v.circulation);
+            Vector3 bound_sub = subsections[i].transform.basis.xform_inv(bound_vec);
+
+            Vector3 force_sub = local_wind_sub.cross(bound_sub) * (rho * v.circulation);
+
+            Vector3 force = subsections[i].transform.basis.xform(force_sub);
             v.lift = force.dot(v.normal);
             v.cl = (speed > 0.1) ? (2.0 * v.circulation) / (speed * subsections[i].chord) : 0.0;
             total_force += force;
