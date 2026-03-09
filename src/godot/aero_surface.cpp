@@ -194,10 +194,8 @@ Vector3 AeroSurface::compute_force(Variant p_state) {
         _update_vortices(); _solve_vlm();
         for (int i = 0; i < vortices.size(); i++) {
             Vortex &v = vortices.write[i];
-            Vector3 bound_vec = v.right_tip - v.left_tip;
-            // L = rho * (V x Gamma_vec). Corrected sign: local_wind x bound_vec produces -Y for positive lift direction.
-            // Using bound_vec.cross(local_wind) produces +Y.
-            Vector3 force = bound_vec.cross(local_wind_node) * (rho * v.circulation);
+            Vector3 bound_dir = (v.right_tip - v.left_tip).normalized();
+            Vector3 force = bound_dir.cross(local_wind_node) * (rho * v.circulation);
             v.lift_vector = force; v.lift = force.dot(v.normal);
             v.cl = (speed > 0.1) ? (2.0 * v.circulation) / (speed * subsections[i].chord) : 0.0;
             total_force_local += force;
@@ -217,7 +215,7 @@ Vector3 AeroSurface::compute_force(Variant p_state) {
             total_force_local += sub.lift_vector + sub.drag_vector;
         }
     }
-    return get_transform().basis.xform(total_force_local);
+    return get_global_transform().basis.xform(total_force_local);
 }
 
 void AeroSurface::_process(double delta) {

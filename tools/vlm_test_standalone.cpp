@@ -104,7 +104,7 @@ int main() {
     std::cout << "AoA | Circulation Distribution (Left -> Center -> Right)" << std::endl;
     std::cout << "--------------------------------------------------------" << std::endl;
 
-    for (double aoa_deg = 0.0; aoa_deg <= 20.1; aoa_deg += 5.0) {
+    for (double aoa_deg = 0.0; aoa_deg <= 40; aoa_deg += 5.0) {
         double alpha_rad = aoa_deg * M_PI / 180.0;
         Vec3 wind(20.0 * std::cos(alpha_rad), 20.0 * std::sin(alpha_rad), 0);
         

@@ -147,49 +147,76 @@ void VLMTester::run_aoa_sweep_test() {
     const int num_panels = 10;
     const double span = 10.0;
     const double chord = 1.0;
-    
-    UtilityFunctions::print("AoA (deg) | Calculated CL | Symmetry");
-    UtilityFunctions::print("------------------------------------");
+    const double rho = 1.225;
+    const double V = 20.0;
 
-    for (float aoa_deg = -10.0; aoa_deg <= 20.1; aoa_deg += 5.0) {
+    UtilityFunctions::print("AoA | CL | Total Lift | Circulation | Panel Lift");
+
+    for (float aoa_deg = -10.0; aoa_deg <= 40.1; aoa_deg += 5.0) {
         double alpha_rad = Math::deg_to_rad(aoa_deg);
-        // Wind in XY plane: X is forward, Y is up (AoA)
-        Vector3 wind_velocity(20.0 * Math::cos(alpha_rad), 20.0 * Math::sin(alpha_rad), 0.0);
+
+        Vector3 wind_velocity(
+            V * Math::cos(alpha_rad),
+            V * Math::sin(alpha_rad),
+            0.0
+        );
 
         Vector<VLMPanel> panels;
+
+        double dy = span / num_panels;
+
         for (int i = 0; i < num_panels; i++) {
             VLMPanel p;
-            double y_start = -span / 2.0 + (span / num_panels) * i;
-            double y_end = y_start + (span / num_panels);
+
+            double y_start = -span/2.0 + dy * i;
+            double y_end = y_start + dy;
+
             p.left_tip = Vector3(0.25 * chord, 0, y_start);
             p.right_tip = Vector3(0.25 * chord, 0, y_end);
-            p.collocation_point = Vector3(0.75 * chord, 0, (y_start + y_end) * 0.5);
-            p.normal = Vector3(0, 1, 0);
-            p.area = (span / num_panels) * chord;
+
+            p.collocation_point =
+                Vector3(0.75 * chord, 0, (y_start + y_end) * 0.5);
+
+            p.normal = Vector3(0,1,0);
+            p.area = dy * chord;
             p.chord = chord;
+
             panels.push_back(p);
         }
 
         VLMSolver::solve(panels, wind_velocity);
 
-        // Calculate CL
         double total_gamma_span = 0;
-        for (int i = 0; i < num_panels; i++) total_gamma_span += panels[i].circulation * (span / num_panels);
-        double rho = 1.225;
-        double V = wind_velocity.length();
-        double CL = (rho * V * (-total_gamma_span)) / (0.5 * rho * V * V * span * chord);
+        double total_lift = 0;
 
-        // Check Symmetry
-        bool symmetrical = true;
-        for (int i = 0; i < num_panels / 2; i++) {
-            if (Math::abs(panels[i].circulation - panels[num_panels - 1 - i].circulation) > 1e-7) {
-                symmetrical = false;
-                break;
-            }
+        String gamma_list = "";
+        String lift_list = "";
+
+        for (int i = 0; i < num_panels; i++) {
+
+            double gamma = panels[i].circulation;
+
+            // panel lift from Kutta-Joukowski
+            double lift_i = rho * V * gamma * dy;
+
+            total_gamma_span += gamma * dy;
+            total_lift += lift_i;
+
+            gamma_list += String::num(gamma,4) + " ";
+            lift_list += String::num(lift_i,2) + " ";
         }
 
-        String sym_str = symmetrical ? "OK" : "FAIL";
-        UtilityFunctions::print(String::num(aoa_deg, 1), "      | ", String::num(CL, 4), "        | ", sym_str);
+        double CL =
+            total_lift /
+            (0.5 * rho * V * V * span * chord);
+
+        UtilityFunctions::print("AoA:", aoa_deg,
+            " CL:", CL,
+            " TotalLift:", total_lift);
+
+        UtilityFunctions::print("Γ:", gamma_list);
+        UtilityFunctions::print("Lift:", lift_list);
+        UtilityFunctions::print("---------------------------");
     }
 
     UtilityFunctions::print("--- VLM AoA Sweep Test Finished ---");
