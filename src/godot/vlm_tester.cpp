@@ -57,6 +57,10 @@ void VLMTester::run_vlm_validation() {
 
     VLMSolver::solve(panels, wind_velocity);
 
+    for (int i = 0; i < num_panels; i++) {
+        UtilityFunctions::print("Panel ", i, " circulation: ", panels[i].circulation);
+    }
+
     // Verify Results
     // 1. Check for symmetry
     bool symmetrical = true;

@@ -189,9 +189,6 @@ void AeroSurface::_update_vortices() {
         v.normal = sub.transform.basis.xform(local_normal).normalized();
         v.span = panel_span;
         vortices.push_back(v);
-
-        Vector3 span = (v.right_tip - v.left_tip).normalized();
-        UtilityFunctions::print("span ", i, ": ", span);
     }
 }
 
@@ -224,13 +221,16 @@ void AeroSurface::_update_debug_draw() {
     debug_mesh->clear_surfaces();
     if (subsections.size() == 0) return;
     debug_mesh->surface_begin(Mesh::PRIMITIVE_LINES);
+    
     Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
     Vector3 wind_dir = local_wind_node.normalized();
+
     for (int i = 0; i < subsections.size(); i++) {
         const SubSection &sub = subsections[i];
         debug_mesh->surface_set_color(Color(0.3, 0.3, 0.3));
         debug_mesh->surface_add_vertex(sub.transform.origin);
         debug_mesh->surface_add_vertex(sub.transform.origin + sub.transform.basis.xform(Vector3(sub.chord, 0, 0)));
+
         if (vlm_enabled && i < vortices.size()) {
             const Vortex &v = vortices[i];
             debug_mesh->surface_set_color(Color(0.2, 0.2, 1.0));
@@ -241,20 +241,20 @@ void AeroSurface::_update_debug_draw() {
             debug_mesh->surface_add_vertex(v.left_tip + wind_dir * debug_vortex_scale);
             debug_mesh->surface_add_vertex(v.right_tip);
             debug_mesh->surface_add_vertex(v.right_tip + wind_dir * debug_vortex_scale);
-            Vector3 local_wind_dir_sub = sub.transform.basis.xform_inv(local_wind_node).normalized();
-            Vector3 local_lift_dir = Vector3(-local_wind_dir_sub.y, local_wind_dir_sub.x, 0).normalized();
+
+            // Lift from VLM
             debug_mesh->surface_set_color(Color(0, 1.0, 1.0)); 
             debug_mesh->surface_add_vertex(sub.transform.origin);
-            debug_mesh->surface_add_vertex(sub.transform.origin + sub.transform.basis.xform(local_lift_dir * v.lift * debug_force_scale));
+            debug_mesh->surface_add_vertex(sub.transform.origin + v.lift_vector * debug_force_scale);
         } else {
-            Vector3 local_wind_dir_sub = sub.transform.basis.xform_inv(local_wind_node).normalized();
-            Vector3 local_lift_dir = Vector3(-local_wind_dir_sub.y, local_wind_dir_sub.x, 0).normalized();
+            // Lift and Drag from strip theory
             debug_mesh->surface_set_color(Color(0, 1.0, 1.0)); 
             debug_mesh->surface_add_vertex(sub.transform.origin);
-            debug_mesh->surface_add_vertex(sub.transform.origin + sub.transform.basis.xform(local_lift_dir * sub.lift * debug_force_scale));
+            debug_mesh->surface_add_vertex(sub.transform.origin + sub.lift_vector * debug_force_scale);
+
             debug_mesh->surface_set_color(Color(1.0, 0.2, 0.2)); 
             debug_mesh->surface_add_vertex(sub.transform.origin);
-            debug_mesh->surface_add_vertex(sub.transform.origin + sub.transform.basis.xform(-local_wind_dir_sub * sub.drag * debug_force_scale));
+            debug_mesh->surface_add_vertex(sub.transform.origin + sub.drag_vector * debug_force_scale);
         }
     }
     debug_mesh->surface_end();
@@ -263,48 +263,52 @@ void AeroSurface::_update_debug_draw() {
 void AeroSurface::physics_step(Variant p_state) {}
 
 Vector3 AeroSurface::compute_force(Variant p_state) {
-    Vector3 total_force;
+    Vector3 total_force_local; // Local to AeroSurface
     double rho = 1.225;
     Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
     double speed = local_wind_node.length();
+
     if (vlm_enabled) {
         _update_vortices();
         _solve_vlm();
         for (int i = 0; i < vortices.size(); i++) {
             Vortex &v = vortices.write[i];
-
-            Vector3 local_wind_sub = subsections[i].transform.basis.xform_inv(local_wind_node);
-
             Vector3 bound_vec = v.right_tip - v.left_tip;
-            Vector3 bound_sub = subsections[i].transform.basis.xform_inv(bound_vec);
-
-            Vector3 force_sub = local_wind_sub.cross(bound_sub) * (rho * v.circulation);
-
-            Vector3 force = subsections[i].transform.basis.xform(force_sub);
+            
+            // Formula: L = rho * (V x Gamma_vec)
+            // My sign convention: local_wind_node is V, bound_vec is Gamma direction.
+            // (1, 0, 0) x (0, 0, 1) = (0, -1, 0).
+            // Since G is negative for lift, this produces (0, 1, 0). Correct.
+            Vector3 force = local_wind_node.cross(bound_vec) * (rho * v.circulation);
+            
+            v.lift_vector = force;
             v.lift = force.dot(v.normal);
             v.cl = (speed > 0.1) ? (2.0 * v.circulation) / (speed * subsections[i].chord) : 0.0;
-            total_force += force;
+            total_force_local += force;
         }
-        return get_global_transform().basis.xform(total_force);
+    } else {
+        for (int i = 0; i < subsections.size(); i++) {
+            SubSection &sub = subsections.write[i];
+            Vector3 local_vel = sub.transform.basis.xform_inv(local_wind_node);
+            double speed_sub = local_vel.length();
+            if (speed_sub < 0.1) { sub.lift_vector = Vector3(); sub.drag_vector = Vector3(); continue; }
+
+            double alpha = Math::atan2(-local_vel.y, -local_vel.x);
+            AeroInput in; in.rho = rho; in.speed = speed_sub; in.alpha = alpha; in.area = sub.area; in.chord = sub.chord;
+            AeroOutput out = flatplate_compute(in);
+            
+            Vector3 local_wind_dir = local_vel.normalized();
+            Vector3 local_lift_dir = Vector3(-local_wind_dir.y, local_wind_dir.x, 0).normalized();
+            
+            sub.lift_vector = sub.transform.basis.xform(local_lift_dir * out.lift);
+            sub.drag_vector = sub.transform.basis.xform(-local_wind_dir * out.drag);
+            
+            total_force_local += sub.lift_vector + sub.drag_vector;
+        }
     }
-    for (int i = 0; i < subsections.size(); i++) {
-        SubSection &sub = subsections.write[i];
-        Vector3 local_vel = sub.transform.basis.xform_inv(local_wind_node);
-        double speed_sub = local_vel.length();
-        if (speed_sub < 0.1) { sub.cl = 0; sub.cd = 0; sub.lift = 0; sub.drag = 0; continue; }
-        double alpha = Math::atan2(-local_vel.y, -local_vel.x);
-        AeroInput in; in.rho = rho; in.speed = speed_sub; in.alpha = alpha; in.area = sub.area; in.chord = sub.chord;
-        AeroOutput out = flatplate_compute(in);
-        double q = 0.5 * rho * speed_sub * speed_sub;
-        sub.cl = out.lift / (q * sub.area);
-        sub.cd = out.drag / (q * sub.area);
-        sub.lift = out.lift; sub.drag = out.drag;
-        Vector3 local_wind_dir = local_vel.normalized();
-        Vector3 local_lift_dir = Vector3(-local_wind_dir.y, local_wind_dir.x, 0).normalized();
-        Vector3 local_force = (local_lift_dir * out.lift) + (-local_wind_dir * out.drag);
-        total_force += sub.transform.basis.xform(local_force);
-    }
-    return total_force;
+
+    // Return force in PARENT space (the Part node)
+    return get_transform().basis.xform(total_force_local);
 }
 
 void AeroSurface::_process(double delta) {

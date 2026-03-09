@@ -24,6 +24,8 @@ protected:
         double drag = 0.0;
         double cl = 0.0;
         double cd = 0.0;
+        Vector3 lift_vector;
+        Vector3 drag_vector;
     };
 
     Vector<SubSection> subsections;
@@ -43,6 +45,7 @@ protected:
         double circulation = 0.0;
         double lift = 0.0;
         double cl = 0.0;
+        Vector3 lift_vector;
     };
 
     Vector<Vortex> vortices;

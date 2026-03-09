@@ -30,7 +30,7 @@ void VLMSolver::solve(Vector<VLMPanel> &p_panels, const Vector3 &p_wind_velocity
     // This helps significantly with ill-conditioned matrices from cosine spacing
     for (int i = 0; i < N; i++) {
         double diag = Math::abs(A[i * N + i]);
-        if (diag > 1e-12) {
+        if (diag > 1e-15) {
             double scale = 1.0 / A[i * N + i];
             for (int j = 0; j < N; j++) {
                 A.write[i * N + j] *= scale;
@@ -62,7 +62,7 @@ void VLMSolver::solve(Vector<VLMPanel> &p_panels, const Vector3 &p_wind_velocity
             b.write[pivot] = temp_b;
         }
 
-        if (Math::abs(A[i * N + i]) < 1e-18) continue;
+        if (Math::abs(A[i * N + i]) < 1e-20) continue;
 
         for (int j = i + 1; j < N; j++) {
             double factor = A[j * N + i] / A[i * N + i];
@@ -78,7 +78,7 @@ void VLMSolver::solve(Vector<VLMPanel> &p_panels, const Vector3 &p_wind_velocity
     for (int i = N - 1; i >= 0; i--) {
         double sum = 0;
         for (int j = i + 1; j < N; j++) sum += A[i * N + j] * x[j];
-        if (Math::abs(A[i * N + i]) > 1e-18) x.write[i] = (b[i] - sum) / A[i * N + i];
+        if (Math::abs(A[i * N + i]) > 1e-20) x.write[i] = (b[i] - sum) / A[i * N + i];
         else x.write[i] = 0;
     }
 
@@ -94,21 +94,20 @@ Vector3 VLMSolver::_calculate_induced_velocity(const Vector3 &p_point, const Vec
     Vector3 r0 = p_v2 - p_v1;
     double r0_mag = r0.length();
     
-    // Core radius proportional to segment length to prevent singularities
-    // This is crucial for tip clusters where panels are tiny
-    const double core_radius = MAX(0.05 * r0_mag, 0.0001); 
+    // Fixed core radius for numerical stability (1mm)
+    const double core_radius = 0.001; 
     const double core_radius2 = core_radius * core_radius;
 
     double r1_mag = r1.length();
     double r2_mag = r2.length();
     
-    if (r1_mag < 1e-10 || r2_mag < 1e-10) return Vector3();
+    if (r1_mag < 1e-12 || r2_mag < 1e-12) return Vector3();
 
     double term = (p_gamma / (4.0 * Math_PI)) * (r0.dot(r1 / r1_mag - r2 / r2_mag));
-    // Softened distance denominator
-    double denom = r1xr2_mag2 + core_radius2 * r0_mag * r0_mag;
+    // Softened distance denominator: |r1xr2|^2 + (rc * |r0|)^2
+    double denom = r1xr2_mag2 + (core_radius2 * r0_mag * r0_mag);
 
-    return r1xr2 * (term / (denom + 1e-15));
+    return r1xr2 * (term / (denom + 1e-18));
 }
 
 Vector3 VLMSolver::_calculate_horseshoe_velocity(const Vector3 &p_point, const VLMPanel &p_panel, double p_gamma, const Vector3 &p_wind_dir) {
@@ -118,22 +117,19 @@ Vector3 VLMSolver::_calculate_horseshoe_velocity(const Vector3 &p_point, const V
     v_total += _calculate_induced_velocity(p_point, p_panel.left_tip, p_panel.right_tip, p_gamma);
 
     // 2. Trailing segments (Semi-infinite)
-    // Wake core radius proportional to local chord
-    const double wake_core = MAX(0.1 * p_panel.chord, 0.001);
-    const double wake_core2 = wake_core * wake_core;
+    const double wake_core2 = 1e-6; // 1mm core for wake
 
     auto calculate_semi_infinite = [&](const Vector3 &P1, const Vector3 &D, double G) {
         Vector3 r1 = p_point - P1;
         Vector3 Dxr1 = D.cross(r1);
         double Dxr1_mag2 = Dxr1.length_squared();
         double r1_mag = r1.length();
-        if (r1_mag < 1e-10) return Vector3();
+        if (r1_mag < 1e-12) return Vector3();
 
-        // Use chord-scaled damping
         return Dxr1 * ( (G / (4.0 * Math_PI)) * (1.0 + D.dot(r1) / r1_mag) / (Dxr1_mag2 + wake_core2) );
     };
 
-    v_total += calculate_semi_infinite(p_panel.left_tip, p_wind_dir, p_gamma);
+    v_total += calculate_semi_infinite(p_panel.left_tip, p_wind_dir, -p_gamma);
     v_total += calculate_semi_infinite(p_panel.right_tip, p_wind_dir, p_gamma);
 
     return v_total;
