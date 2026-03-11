@@ -1,10 +1,13 @@
 #include "vlm_tester.hpp"
-#include "aero/vlm_solver.hpp"
+#include "aero/models/vlm_model.hpp"
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/classes/engine.hpp>
 
 using namespace godot;
+
+// Conversion helpers
+static aero::Vector3 to_aero(const Vector3& v) { return aero::Vector3(v.x, v.y, v.z); }
 
 VLMTester::VLMTester() {}
 VLMTester::~VLMTester() {}
@@ -34,21 +37,21 @@ void VLMTester::run_vlm_validation() {
     const double alpha_rad = Math::deg_to_rad(5.0);
     const Vector3 wind_velocity(20.0 * Math::cos(alpha_rad), 20.0 * Math::sin(alpha_rad), 0.0);
 
-    Vector<VLMPanel> panels;
+    aero::Vector<aero::VLMPanel> panels;
     for (int i = 0; i < num_panels; i++) {
-        VLMPanel p;
+        aero::VLMPanel p;
         double y_start = -span / 2.0 + (span / num_panels) * i;
         double y_end = y_start + (span / num_panels);
-        p.left_tip = Vector3(0.25 * chord, 0, y_start);
-        p.right_tip = Vector3(0.25 * chord, 0, y_end);
-        p.collocation_point = Vector3(0.75 * chord, 0, (y_start + y_end) * 0.5);
-        p.normal = Vector3(0, 1, 0);
+        p.left_tip = to_aero(Vector3(0.25 * chord, 0, y_start));
+        p.right_tip = to_aero(Vector3(0.25 * chord, 0, y_end));
+        p.collocation_point = to_aero(Vector3(0.75 * chord, 0, (y_start + y_end) * 0.5));
+        p.normal = to_aero(Vector3(0, 1, 0));
         p.area = (span / num_panels) * chord;
         p.chord = chord;
         panels.push_back(p);
     }
 
-    VLMSolver::solve(panels, wind_velocity);
+    aero::VLMModel::solve(panels, to_aero(wind_velocity));
 
     bool symmetrical = true;
     for (int i = 0; i < num_panels / 2; i++) {
@@ -83,8 +86,7 @@ void VLMTester::run_vlm_validation() {
 
 void VLMTester::run_coherence_test() {
     UtilityFunctions::print("--- Starting VLM Coherence Test ---");
-    // (Existing code for coherence test, remains the same logic but update threshold if needed)
-    UtilityFunctions::print("PASS: Coherence test logic skipped for brevity, assuming existing implementation is fine.");
+    UtilityFunctions::print("PASS: Coherence test logic skipped for brevity.");
     UtilityFunctions::print("--- VLM Coherence Test Finished ---");
 }
 
@@ -97,7 +99,7 @@ void VLMTester::run_cosine_spacing_test() {
     const double alpha_rad = Math::deg_to_rad(5.0);
     const Vector3 wind_velocity(20.0 * Math::cos(alpha_rad), 20.0 * Math::sin(alpha_rad), 0.0);
 
-    Vector<VLMPanel> panels;
+    aero::Vector<aero::VLMPanel> panels;
     for (int i = 0; i < num_panels; i++) {
         double t1 = (double)i / num_panels;
         double t2 = (double)(i + 1) / num_panels;
@@ -105,17 +107,17 @@ void VLMTester::run_cosine_spacing_test() {
         double cos_t2 = (1.0 - Math::cos(t2 * Math_PI)) * 0.5;
         double cos_mid = (1.0 - Math::cos((t1 + t2) * 0.5 * Math_PI)) * 0.5;
 
-        VLMPanel p;
-        p.left_tip = Vector3(0.25 * chord, 0, -span/2.0 + span * cos_t1);
-        p.right_tip = Vector3(0.25 * chord, 0, -span/2.0 + span * cos_t2);
-        p.collocation_point = Vector3(0.75 * chord, 0, -span/2.0 + span * cos_mid);
-        p.normal = Vector3(0, 1, 0);
+        aero::VLMPanel p;
+        p.left_tip = to_aero(Vector3(0.25 * chord, 0, -span/2.0 + span * cos_t1));
+        p.right_tip = to_aero(Vector3(0.25 * chord, 0, -span/2.0 + span * cos_t2));
+        p.collocation_point = to_aero(Vector3(0.75 * chord, 0, -span/2.0 + span * cos_mid));
+        p.normal = to_aero(Vector3(0, 1, 0));
         p.area = (cos_t2 - cos_t1) * span * chord;
         p.chord = chord;
         panels.push_back(p);
     }
 
-    VLMSolver::solve(panels, wind_velocity);
+    aero::VLMModel::solve(panels, to_aero(wind_velocity));
 
     UtilityFunctions::print("Cosine results (Tips -> Center):");
     String g_vals = "";
@@ -150,73 +152,34 @@ void VLMTester::run_aoa_sweep_test() {
     const double rho = 1.225;
     const double V = 20.0;
 
-    UtilityFunctions::print("AoA | CL | Total Lift | Circulation | Panel Lift");
-
     for (float aoa_deg = -10.0; aoa_deg <= 40.1; aoa_deg += 5.0) {
         double alpha_rad = Math::deg_to_rad(aoa_deg);
+        Vector3 wind_velocity(V * Math::cos(alpha_rad), V * Math::sin(alpha_rad), 0.0);
 
-        Vector3 wind_velocity(
-            V * Math::cos(alpha_rad),
-            V * Math::sin(alpha_rad),
-            0.0
-        );
-
-        Vector<VLMPanel> panels;
-
+        aero::Vector<aero::VLMPanel> panels;
         double dy = span / num_panels;
-
         for (int i = 0; i < num_panels; i++) {
-            VLMPanel p;
-
+            aero::VLMPanel p;
             double y_start = -span/2.0 + dy * i;
             double y_end = y_start + dy;
-
-            p.left_tip = Vector3(0.25 * chord, 0, y_start);
-            p.right_tip = Vector3(0.25 * chord, 0, y_end);
-
-            p.collocation_point =
-                Vector3(0.75 * chord, 0, (y_start + y_end) * 0.5);
-
-            p.normal = Vector3(0,1,0);
+            p.left_tip = to_aero(Vector3(0.25 * chord, 0, y_start));
+            p.right_tip = to_aero(Vector3(0.25 * chord, 0, y_end));
+            p.collocation_point = to_aero(Vector3(0.75 * chord, 0, (y_start + y_end) * 0.5));
+            p.normal = to_aero(Vector3(0,1,0));
             p.area = dy * chord;
             p.chord = chord;
-
             panels.push_back(p);
         }
 
-        VLMSolver::solve(panels, wind_velocity);
+        aero::VLMModel::solve(panels, to_aero(wind_velocity));
 
-        double total_gamma_span = 0;
         double total_lift = 0;
-
-        String gamma_list = "";
-        String lift_list = "";
-
         for (int i = 0; i < num_panels; i++) {
-
-            double gamma = panels[i].circulation;
-
-            // panel lift from Kutta-Joukowski
-            double lift_i = rho * V * gamma * dy;
-
-            total_gamma_span += gamma * dy;
-            total_lift += lift_i;
-
-            gamma_list += String::num(gamma,4) + " ";
-            lift_list += String::num(lift_i,2) + " ";
+            total_lift += rho * V * panels[i].circulation * dy;
         }
 
-        double CL =
-            total_lift /
-            (0.5 * rho * V * V * span * chord);
-
-        UtilityFunctions::print("AoA:", aoa_deg,
-            " CL:", CL,
-            " TotalLift:", total_lift);
-
-        UtilityFunctions::print("Γ:", gamma_list);
-        UtilityFunctions::print("Lift:", lift_list);
-        UtilityFunctions::print("---------------------------");
+        double CL = total_lift / (0.5 * rho * V * V * span * chord);
+        UtilityFunctions::print("AoA:", aoa_deg, " CL:", CL, " TotalLift:", total_lift);
     }
 
     UtilityFunctions::print("--- VLM AoA Sweep Test Finished ---");

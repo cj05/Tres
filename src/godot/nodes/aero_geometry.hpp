@@ -1,7 +1,7 @@
 #pragma once
 
-#include "geometry_component.hpp"
-#include "aero_geometry_properties.hpp"
+#include "../core/geometry_component.hpp"
+#include "../resources/aero_geometry_properties.hpp"
 #include <godot_cpp/classes/surface_tool.hpp>
 
 namespace godot {

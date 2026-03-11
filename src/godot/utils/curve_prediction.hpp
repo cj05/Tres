@@ -2,7 +2,7 @@
 
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
-#include "coefficient_curve.hpp"
+#include "../resources/coefficient_curve.hpp"
 
 namespace godot {
 

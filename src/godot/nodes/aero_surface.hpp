@@ -1,8 +1,7 @@
 #pragma once
 
-#include "aero_component.hpp"
+#include "../core/aero_component.hpp"
 #include "aero_geometry.hpp"
-#include "aero/flatplate_model.hpp"
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/immediate_mesh.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>

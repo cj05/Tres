@@ -1,7 +1,7 @@
 #pragma once
 
 #include "modular_component.hpp"
-#include "tooled_properties.hpp"
+#include "../utils/tooled_properties.hpp"
 #include <godot_cpp/classes/shape3d.hpp>
 #include <godot_cpp/classes/mesh.hpp>
 

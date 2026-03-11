@@ -1,6 +1,6 @@
 #pragma once
 
-#include "tooled_properties.hpp"
+#include "../utils/tooled_properties.hpp"
 #include "wing_section.hpp"
 
 namespace godot {

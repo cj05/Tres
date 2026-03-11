@@ -1,4 +1,5 @@
 #include "aero_geometry.hpp"
+#include "../utils/wing_generator.hpp"
 #include <godot_cpp/core/class_db.hpp>
 
 using namespace godot;
@@ -19,37 +20,17 @@ void AeroGeometry::_generate_geometry() {
     st.instantiate();
     st->begin(Mesh::PRIMITIVE_TRIANGLES);
 
+    Vector<WingStation> stations = WingGenerator::generate_stations(wing_props);
     Vector<PackedVector3Array> all_stations_points;
-    Transform3D current_transform;
 
-    TypedArray<WingSection> sections = wing_props->get_sections();
-
-    // Root section
-    PackedVector3Array root_points;
-    PackedVector2Array resampled_root = get_resampled_points(wing_props->get_root_airfoil());
-    for (int i = 0; i < resampled_root.size(); i++) {
-        Vector2 p2 = resampled_root[i];
-        Vector3 p3(p2.x * wing_props->get_root_chord(), p2.y * wing_props->get_root_chord(), 0);
-        root_points.append(p3);
-    }
-    all_stations_points.append(root_points);
-
-    for (int i = 0; i < sections.size(); i++) {
-        Ref<WingSection> s = sections[i];
-        if (s.is_null()) continue;
-
+    for (const auto& s : stations) {
         PackedVector3Array points_3d;
-        current_transform.basis = current_transform.basis.rotated(Vector3(1, 0, 0), Math::deg_to_rad(s->get_dihedral_angle()));
-        current_transform.origin += current_transform.basis.xform(Vector3(s->get_sweep_offset(), 0, s->get_span_offset()));
-
-        PackedVector2Array resampled = get_resampled_points(s->get_airfoil_data());
+        PackedVector2Array resampled = get_resampled_points(s.airfoil);
         for (int j = 0; j < resampled.size(); j++) {
             Vector2 p2 = resampled[j];
-            Vector3 p3(p2.x * s->get_chord(), p2.y * s->get_chord(), 0);
-            p3 = p3.rotated(Vector3(1, 0, 0), Math::deg_to_rad(s->get_twist()));
-            
-            // Transform to world/local space
-            points_3d.append(current_transform.xform(p3));
+            Vector3 p3(p2.x * s.chord, p2.y * s.chord, 0);
+            p3 = p3.rotated(Vector3(1, 0, 0), Math::deg_to_rad(s.twist));
+            points_3d.append(s.transform.xform(p3));
         }
         all_stations_points.append(points_3d);
     }

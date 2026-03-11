@@ -1,11 +1,17 @@
 #include "aero_surface.hpp"
-#include "part.hpp"
-#include "aero/vlm_solver.hpp"
+#include "../core/part.hpp"
+#include "../utils/wing_generator.hpp"
+#include "aero/models/vlm_model.hpp"
+#include "aero/models/flatplate_model.hpp"
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 using namespace godot;
+
+// Conversion helpers
+static aero::Vector3 to_aero(const Vector3& v) { return aero::Vector3(v.x, v.y, v.z); }
+static Vector3 from_aero(const aero::Vector3& v) { return Vector3((double)v.x, (double)v.y, (double)v.z); }
 
 AeroSurface::AeroSurface() {}
 AeroSurface::~AeroSurface() {}
@@ -75,6 +81,7 @@ void AeroSurface::_generate_subsections() {
     subsections.clear();
     Part *p = Object::cast_to<Part>(get_part());
     if (!p) return;
+    
     AeroGeometry *geo = nullptr;
     TypedArray<ModularComponent> components = p->get_components();
     for (int i = 0; i < components.size(); i++) {
@@ -82,47 +89,23 @@ void AeroSurface::_generate_subsections() {
         if (geo) break;
     }
     if (!geo) return;
+
     Ref<AeroGeometryProperties> props = geo->get_properties();
-    if (props.is_valid()) {
-        if (!props->is_connected("changed", Callable(this, "_generate_subsections")))
-            props->connect("changed", Callable(this, "_generate_subsections"));
-    }
     if (props.is_null()) return;
-    TypedArray<WingSection> sections = props->get_sections();
-    struct Station { Transform3D transform; double chord; Ref<AirfoilResource> airfoil; };
-    Vector<Station> stations;
-    Station root; root.transform = Transform3D(); root.chord = props->get_root_chord(); root.airfoil = props->get_root_airfoil();
-    stations.push_back(root);
-    Transform3D current_tf;
-    for (int i = 0; i < sections.size(); i++) {
-        Ref<WingSection> s = sections[i];
-        if (s.is_null()) continue;
-        current_tf.basis = current_tf.basis.rotated(Vector3(1, 0, 0), Math::deg_to_rad(s->get_dihedral_angle()));
-        current_tf.origin += current_tf.basis.xform(Vector3(s->get_sweep_offset(), 0, s->get_span_offset()));
-        Station st; st.transform = current_tf; st.chord = s->get_chord(); st.airfoil = s->get_airfoil_data();
-        stations.push_back(st);
-    }
-    if (stations.size() < 2) return;
-    for (int i = 0; i < stations.size() - 1; i++) {
-        Station s1 = stations[i]; Station s2 = stations[i+1];
-        double segment_span = s1.transform.origin.distance_to(s2.transform.origin);
-        int num_sub = (int)Math::round(segment_span * segments_per_meter);
-        if (num_sub < 1) num_sub = 1;
-        for (int j = 0; j < num_sub; j++) {
-            double t1 = (double)j / num_sub;
-            double t2 = (double)(j + 1) / num_sub;
-            double mid = (t1 + t2) * 0.5;
 
-            SubSection sub;
-            sub.transform.origin = s1.transform.origin.lerp(s2.transform.origin, mid);
-            sub.transform.basis = s1.transform.basis.slerp(s2.transform.basis, mid);
-            sub.chord = Math::lerp(s1.chord, s2.chord, mid);
-            sub.airfoil = (mid < 0.5) ? s1.airfoil : s2.airfoil;
+    if (!props->is_connected("changed", Callable(this, "_generate_subsections")))
+        props->connect("changed", Callable(this, "_generate_subsections"));
 
-            // equal span fraction
-            sub.area = segment_span * (t2 - t1) * sub.chord;
-            subsections.push_back(sub);
-        }
+    Vector<WingStation> stations = WingGenerator::generate_stations(props);
+    Vector<WingSubsection> wing_subs = WingGenerator::generate_subsections(stations, segments_per_meter);
+    
+    for (const auto& ws : wing_subs) {
+        SubSection s;
+        s.transform = ws.transform;
+        s.area = ws.area;
+        s.chord = ws.chord;
+        s.airfoil = ws.airfoil;
+        subsections.push_back(s);
     }
 }
 
@@ -143,15 +126,20 @@ void AeroSurface::_update_vortices() {
 
 void AeroSurface::_solve_vlm() {
     if (vortices.size() == 0) return;
-    Vector<VLMPanel> panels;
+    aero::Vector<aero::VLMPanel> panels;
     for (int i = 0; i < vortices.size(); i++) {
-        VLMPanel p; p.left_tip = vortices[i].left_tip; p.right_tip = vortices[i].right_tip;
-        p.collocation_point = vortices[i].collocation_point; p.normal = vortices[i].normal;
-        p.area = subsections[i].area; p.chord = subsections[i].chord; panels.push_back(p);
+        aero::VLMPanel p;
+        p.left_tip = to_aero(vortices[i].left_tip);
+        p.right_tip = to_aero(vortices[i].right_tip);
+        p.collocation_point = to_aero(vortices[i].collocation_point);
+        p.normal = to_aero(vortices[i].normal);
+        p.area = subsections[i].area;
+        p.chord = subsections[i].chord;
+        panels.push_back(p);
     }
     Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
-    VLMSolver::solve(panels, local_wind_node);
-    for (int i = 0; i < vortices.size(); i++) vortices.write[i].circulation = panels[i].circulation;
+    aero::VLMModel::solve(panels, to_aero(local_wind_node));
+    for (int i = 0; i < vortices.size(); i++) vortices.write[i].circulation = (double)panels[i].circulation;
 }
 
 void AeroSurface::_update_debug_draw() {
@@ -187,28 +175,40 @@ void AeroSurface::_update_debug_draw() {
 void AeroSurface::physics_step(Variant p_state) {}
 
 Vector3 AeroSurface::compute_force(Variant p_state) {
-    Vector3 total_force_local; double rho = 1.225;
+    Vector3 total_force_local;
+    double rho = 1.225;
     Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
     double speed = local_wind_node.length();
     if (vlm_enabled) {
-        _update_vortices(); _solve_vlm();
+        _update_vortices();
+        _solve_vlm();
         for (int i = 0; i < vortices.size(); i++) {
             Vortex &v = vortices.write[i];
             Vector3 bound_dir = (v.right_tip - v.left_tip).normalized();
             Vector3 force = bound_dir.cross(local_wind_node) * (rho * v.circulation);
-            v.lift_vector = force; v.lift = force.dot(v.normal);
+            v.lift_vector = force;
+            v.lift = force.dot(v.normal);
             v.cl = (speed > 0.1) ? (2.0 * v.circulation) / (speed * subsections[i].chord) : 0.0;
             total_force_local += force;
         }
     } else {
+        aero::FlatPlateModel model;
         for (int i = 0; i < subsections.size(); i++) {
             SubSection &sub = subsections.write[i];
             Vector3 local_vel = sub.transform.basis.xform_inv(local_wind_node);
             double s_sub = local_vel.length();
-            if (s_sub < 0.1) { sub.lift_vector = sub.drag_vector = Vector3(); continue; }
+            if (s_sub < 0.1) {
+                sub.lift_vector = sub.drag_vector = Vector3();
+                continue;
+            }
             double alpha = Math::atan2(-local_vel.y, -local_vel.x);
-            AeroInput in; in.rho = rho; in.speed = s_sub; in.alpha = alpha; in.area = sub.area; in.chord = sub.chord;
-            AeroOutput out = flatplate_compute(in);
+            aero::AeroInput in;
+            in.rho = rho;
+            in.speed = s_sub;
+            in.alpha = alpha;
+            in.area = sub.area;
+            in.chord = sub.chord;
+            aero::AeroOutput out = model.compute(in);
             Vector3 l_dir = Vector3(-local_vel.y, local_vel.x, 0).normalized();
             sub.lift_vector = sub.transform.basis.xform(l_dir * out.lift);
             sub.drag_vector = sub.transform.basis.xform(-local_vel.normalized() * out.drag);

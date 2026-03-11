@@ -1,7 +1,7 @@
 #pragma once
 
 #include <godot_cpp/core/class_db.hpp>
-#include "coefficient_curve.hpp"
+#include "../resources/coefficient_curve.hpp"
 
 namespace godot {
 
