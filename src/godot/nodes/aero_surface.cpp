@@ -47,15 +47,24 @@ bool AeroSurface::is_debug_draw() const { return debug_draw; }
 void AeroSurface::set_segments_per_meter(double p_segments) {
     if (Math::is_equal_approx(segments_per_meter, p_segments)) return;
     segments_per_meter = MAX(p_segments, 0.1);
+    dirty = true;
     _generate_subsections();
 }
 
 double AeroSurface::get_segments_per_meter() const { return segments_per_meter; }
 
-void AeroSurface::set_wind_velocity(Vector3 p_wind) { wind_velocity = p_wind; }
+void AeroSurface::set_wind_velocity(Vector3 p_wind) {
+    if (wind_velocity == p_wind) return;
+    wind_velocity = p_wind;
+    dirty = true;
+}
 Vector3 AeroSurface::get_wind_velocity() const { return wind_velocity; }
 
-void AeroSurface::set_vlm_enabled(bool p_enabled) { vlm_enabled = p_enabled; }
+void AeroSurface::set_vlm_enabled(bool p_enabled) {
+    if (vlm_enabled == p_enabled) return;
+    vlm_enabled = p_enabled;
+    dirty = true;
+}
 bool AeroSurface::is_vlm_enabled() const { return vlm_enabled; }
 
 void AeroSurface::set_debug_force_scale(double p_scale) { debug_force_scale = p_scale; }
@@ -107,6 +116,7 @@ void AeroSurface::_generate_subsections() {
         s.airfoil = ws.airfoil;
         subsections.push_back(s);
     }
+    dirty = true;
 }
 
 void AeroSurface::_update_vortices() {
@@ -115,11 +125,27 @@ void AeroSurface::_update_vortices() {
         const SubSection &sub = subsections[i];
         Vortex v;
         double panel_span = sub.area / sub.chord;
-        v.left_tip = sub.transform.xform(Vector3(0.25 * sub.chord, 0, -0.5 * panel_span));
-        v.right_tip = sub.transform.xform(Vector3(0.25 * sub.chord, 0, 0.5 * panel_span));
+        
+        // Define tips in local subsection space
+        Vector3 p_left = Vector3(0.25 * sub.chord, 0, -0.5 * panel_span);
+        Vector3 p_right = Vector3(0.25 * sub.chord, 0, 0.5 * panel_span);
+        
+        v.left_tip = sub.transform.xform(p_left);
+        v.right_tip = sub.transform.xform(p_right);
         v.collocation_point = sub.transform.xform(Vector3(0.75 * sub.chord, 0, 0));
         v.normal = sub.transform.basis.xform(Vector3(0, 1, 0)).normalized();
         v.span = panel_span;
+
+        // Ensure tips are ordered correctly relative to the normal (Right-Hand Rule)
+        // This is crucial for mirrored wings where the basis handedness is flipped.
+        Vector3 calculated_normal = (v.right_tip - v.left_tip).cross(v.collocation_point - v.left_tip);
+        if (calculated_normal.dot(v.normal) < 0) {
+            UtilityFunctions::print("AeroSurface Inverted, flipping points");
+            Vector3 temp = v.left_tip;
+            v.left_tip = v.right_tip;
+            v.right_tip = temp;
+        }
+
         vortices.push_back(v);
     }
 }
@@ -139,33 +165,90 @@ void AeroSurface::_solve_vlm() {
     }
     Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
     aero::VLMModel::solve(panels, to_aero(local_wind_node));
+
+    if (panels.size() > 1) {
+        UtilityFunctions::print("AeroSurface [", get_name(), "] VLM Solve Results:");
+        UtilityFunctions::print("  - Panel 0 Gamma: ", panels[0].circulation);
+        UtilityFunctions::print("  - Panel N Gamma: ", panels[panels.size()-1].circulation);
+        UtilityFunctions::print("  - Local Wind: ", local_wind_node);
+    }
+
+    
+
     for (int i = 0; i < vortices.size(); i++) vortices.write[i].circulation = (double)panels[i].circulation;
+
+    if (debug_draw) {
+        UtilityFunctions::print("--- VLM Circulation Map [", get_name(), "] ---");
+        for (int i = 0; i < vortices.size(); i++) {
+            UtilityFunctions::print("  Panel ", i, ": ", vortices[i].circulation);
+        }
+        UtilityFunctions::print("------------------------------------------");
+    }
 }
 
 void AeroSurface::_update_debug_draw() {
     if (debug_mesh.is_null() || !debug_draw) return;
     debug_mesh->clear_surfaces();
     if (subsections.size() == 0) return;
+
     debug_mesh->surface_begin(Mesh::PRIMITIVE_LINES);
     Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
     Vector3 wind_dir = local_wind_node.normalized();
+    
+    // Find max circulation for normalized coloring
+    double max_gamma = 0.01;
+    if (vlm_enabled) {
+        for (int i = 0; i < vortices.size(); i++) {
+            max_gamma = MAX(max_gamma, Math::abs(vortices[i].circulation));
+        }
+    }
+
     for (int i = 0; i < subsections.size(); i++) {
         const SubSection &sub = subsections[i];
-        debug_mesh->surface_set_color(Color(0.3, 0.3, 0.3));
+        
+        // 1. Draw Chord Line (Gray)
+        debug_mesh->surface_set_color(Color(0.4, 0.4, 0.4));
         debug_mesh->surface_add_vertex(sub.transform.origin);
         debug_mesh->surface_add_vertex(sub.transform.origin + sub.transform.basis.xform(Vector3(sub.chord, 0, 0)));
+
         if (vlm_enabled && i < vortices.size()) {
             const Vortex &v = vortices[i];
-            debug_mesh->surface_set_color(Color(0.2, 0.2, 1.0)); debug_mesh->surface_add_vertex(v.left_tip); debug_mesh->surface_add_vertex(v.right_tip);
-            debug_mesh->surface_set_color(Color(0.1, 0.1, 0.5));
-            debug_mesh->surface_add_vertex(v.left_tip); debug_mesh->surface_add_vertex(v.left_tip + wind_dir * debug_vortex_scale);
-            debug_mesh->surface_add_vertex(v.right_tip); debug_mesh->surface_add_vertex(v.right_tip + wind_dir * debug_vortex_scale);
-            debug_mesh->surface_set_color(Color(0, 1.0, 1.0)); debug_mesh->surface_add_vertex(sub.transform.origin);
+            double gamma_ratio = Math::abs(v.circulation) / max_gamma;
+            
+            // 2. Bound Segment (Color based on Gamma: Blue -> Pink/White)
+            Color gamma_color = Color(0.2, 0.5, 1.0).lerp(Color(1.0, 0.2, 0.8), gamma_ratio);
+            debug_mesh->surface_set_color(gamma_color);
+            debug_mesh->surface_add_vertex(v.left_tip);
+            debug_mesh->surface_add_vertex(v.right_tip);
+
+            // 3. Horseshoe Trailing Legs (Fading Blue)
+            debug_mesh->surface_set_color(Color(0.1, 0.1, 0.5, 0.5));
+            debug_mesh->surface_add_vertex(v.left_tip);
+            debug_mesh->surface_add_vertex(v.left_tip + wind_dir * debug_vortex_scale * 10.0);
+            debug_mesh->surface_add_vertex(v.right_tip);
+            debug_mesh->surface_add_vertex(v.right_tip + wind_dir * debug_vortex_scale * 10.0);
+
+            // 4. Lift Vector (Cyan)
+            debug_mesh->surface_set_color(Color(0, 1.0, 1.0));
+            debug_mesh->surface_add_vertex(sub.transform.origin);
             debug_mesh->surface_add_vertex(sub.transform.origin + v.lift_vector * debug_force_scale);
+            
+            // 5. Collocation Point (Small cross)
+            debug_mesh->surface_set_color(Color(1, 1, 0)); // Yellow
+            Vector3 cp = v.collocation_point;
+            double s = 0.02;
+            debug_mesh->surface_add_vertex(cp + Vector3(s,0,0)); debug_mesh->surface_add_vertex(cp - Vector3(s,0,0));
+            debug_mesh->surface_add_vertex(cp + Vector3(0,s,0)); debug_mesh->surface_add_vertex(cp - Vector3(0,s,0));
+            debug_mesh->surface_add_vertex(cp + Vector3(0,0,s)); debug_mesh->surface_add_vertex(cp - Vector3(0,0,s));
+
         } else {
-            debug_mesh->surface_set_color(Color(0, 1.0, 1.0)); debug_mesh->surface_add_vertex(sub.transform.origin);
+            // 6. Non-VLM Lift (Cyan) and Drag (Red)
+            debug_mesh->surface_set_color(Color(0, 1.0, 1.0));
+            debug_mesh->surface_add_vertex(sub.transform.origin);
             debug_mesh->surface_add_vertex(sub.transform.origin + sub.lift_vector * debug_force_scale);
-            debug_mesh->surface_set_color(Color(1.0, 0.2, 0.2)); debug_mesh->surface_add_vertex(sub.transform.origin);
+
+            debug_mesh->surface_set_color(Color(1.0, 0.2, 0.2));
+            debug_mesh->surface_add_vertex(sub.transform.origin);
             debug_mesh->surface_add_vertex(sub.transform.origin + sub.drag_vector * debug_force_scale);
         }
     }
@@ -175,20 +258,36 @@ void AeroSurface::_update_debug_draw() {
 void AeroSurface::physics_step(Variant p_state) {}
 
 Vector3 AeroSurface::compute_force(Variant p_state) {
+    Transform3D current_transform = get_global_transform();
+    Vector3 local_wind_node = current_transform.basis.xform_inv(wind_velocity);
+
+    // Check if we can use cached results
+    if (!dirty && 
+        local_wind_node.is_equal_approx(last_local_wind) && 
+        current_transform.is_equal_approx(last_transform)) {
+        return current_transform.basis.xform(force_cache);
+    }
+
     Vector3 total_force_local;
     double rho = 1.225;
-    Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
     double speed = local_wind_node.length();
+
     if (vlm_enabled) {
         _update_vortices();
         _solve_vlm();
+
         for (int i = 0; i < vortices.size(); i++) {
             Vortex &v = vortices.write[i];
-            Vector3 bound_dir = (v.right_tip - v.left_tip).normalized();
-            Vector3 force = bound_dir.cross(local_wind_node) * (rho * v.circulation);
+            Vector3 bound_vector = (v.right_tip - v.left_tip);
+            Vector3 force = bound_vector.cross(local_wind_node) * (rho * v.circulation);
+            
             v.lift_vector = force;
             v.lift = force.dot(v.normal);
-            v.cl = (speed > 0.1) ? (2.0 * v.circulation) / (speed * subsections[i].chord) : 0.0;
+            
+            // Cl calculation: (2 * L) / (rho * v^2 * S)
+            double dyn_press = 0.5 * rho * speed * speed;
+            v.cl = (speed > 0.1) ? v.lift / (dyn_press * subsections[i].area) : 0.0;
+            
             total_force_local += force;
         }
     } else {
@@ -215,7 +314,14 @@ Vector3 AeroSurface::compute_force(Variant p_state) {
             total_force_local += sub.lift_vector + sub.drag_vector;
         }
     }
-    return get_global_transform().basis.xform(total_force_local);
+
+    // Update cache
+    force_cache = total_force_local;
+    last_local_wind = local_wind_node;
+    last_transform = current_transform;
+    dirty = false;
+
+    return current_transform.basis.xform(total_force_local);
 }
 
 void AeroSurface::_process(double delta) {

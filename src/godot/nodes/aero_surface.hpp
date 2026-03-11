@@ -53,6 +53,12 @@ protected:
     Ref<ImmediateMesh> debug_mesh;
     Ref<StandardMaterial3D> debug_material;
 
+    // Caching
+    bool dirty = true;
+    Vector3 last_local_wind;
+    Vector3 force_cache;
+    Transform3D last_transform;
+
     void _generate_subsections();
     void _update_vortices();
     void _solve_vlm();
