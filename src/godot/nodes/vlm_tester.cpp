@@ -25,6 +25,7 @@ void VLMTester::_ready() {
     if (!Engine::get_singleton()->is_editor_hint()) {
         run_vlm_validation();
         run_coherence_test();
+        run_range_stability_test();
         run_cosine_spacing_test();
         run_aoa_sweep_test();
     }
@@ -133,7 +134,32 @@ void VLMTester::run_vlm_validation() {
 
 void VLMTester::run_coherence_test() {
     UtilityFunctions::print("--- Starting VLM Coherence Test ---");
-    UtilityFunctions::print("PASS: Coherence test logic skipped for brevity.");
+    if (!aero_surface) return;
+
+    // 1. Solve the system normally
+    aero_surface->compute_force(Variant());
+    
+    // 2. Cross-reference: Kutta-Joukowski vs. Trefftz Plane (or Momentum)
+    // For a simple coherence check: The sum of individual panel lifts 
+    // should equal the total force magnitude returned by compute_force.
+    
+    double sum_individual_lift = 0.0;
+    // (Assuming you've added a way to access the internal 'vortices' vector)
+    TypedArray<Dictionary> v_data = aero_surface->get_vortices();
+    for (int i = 0; i < v_data.size(); i++) {
+        Dictionary v = v_data[i]; // Cast Variant to Dictionary
+        Vector3 lv = v["lift_vector"]; // Dictionary handles the Variant conversion
+        sum_individual_lift += lv.length();
+    }
+
+    Vector3 total_force = aero_surface->get_force_cache();
+    double error = Math::abs(sum_individual_lift - total_force.length());
+
+    if (error < 1e-4) {
+        UtilityFunctions::print("PASS: Force summation is coherent. Error: ", error);
+    } else {
+        UtilityFunctions::print("FAIL: Force incoherence! Sum: ", sum_individual_lift, " Cache: ", total_force.length());
+    }
     UtilityFunctions::print("--- VLM Coherence Test Finished ---");
 }
 
@@ -188,6 +214,79 @@ void VLMTester::run_cosine_spacing_test() {
     }
 
     UtilityFunctions::print("--- VLM Cosine Spacing Test Finished ---");
+}
+
+
+void VLMTester::run_range_stability_test() {
+    UtilityFunctions::print("--- Starting VLM Range & Stability Test ---");
+
+    if (!aero_surface) {
+        UtilityFunctions::print("FAIL: No AeroSurface to test.");
+        return;
+    }
+
+    const double speed = 20.0;
+    const double rho = 1.225;
+    const double dyn_press = 0.5 * rho * speed * speed;
+
+    // Test across a range of AoAs to find the "Break Point"
+    double test_aoas[] = { 0.0, 5.0, 15.0, 25.0 };
+    
+    for (double aoa : test_aoas) {
+        double rad = Math::deg_to_rad(aoa);
+        Vector3 wind(speed * Math::cos(rad), speed * Math::sin(rad), 0.0);
+        
+        aero_surface->set_wind_velocity(wind);
+        aero_surface->compute_force(Variant());
+
+        // Check every panel's circulation
+        bool panel_failed = false;
+        double max_observed_cl = 0.0;
+
+        // You'll need to expose the vortices vector or get results from AeroSurface
+        TypedArray<Dictionary> subs = aero_surface->get_subsections();
+        TypedArray<Dictionary> v_data_range = aero_surface->get_vortices();
+
+        for (int i = 0; i < v_data_range.size(); i++) {
+            Dictionary v = v_data_range[i];
+            Dictionary s = subs[i];
+            
+            double gamma = v["circulation"];
+            double area = s["area"];
+            //double chord = s["chord"];
+            
+            // Calculate local CL: Lift / (q * S)
+            // Using Kutta-Joukowski Lift approximation: rho * V * gamma * span
+            Dictionary sub = aero_surface->get_subsections()[i];
+            double chord_val = (double)sub["chord"]; 
+            double span = area / chord_val;
+            double lift = rho * speed * Math::abs(gamma) * span;
+            double cl = (area > 0) ? lift / (dyn_press * area) : 0.0;
+
+            max_observed_cl = Math::max(max_observed_cl, cl);
+
+            // 1. Check for NaN/Inf
+            if (!Math::is_finite(gamma)) {
+                UtilityFunctions::print("FAIL: NaN/Inf detected at AoA ", aoa, " on panel ", i);
+                panel_failed = true;
+                break;
+            }
+
+            // 2. Check for "Physical Impossible" Range
+            // A CL > 10.0 in a standard VLM usually means the 3.232 AR spike is happening
+            if (cl > 10.0) {
+                UtilityFunctions::print("FAIL: Divergent Lift! Panel ", i, " CL is ", cl, " (Limit: 10.0)");
+                panel_failed = true;
+                break;
+            }
+        }
+
+        if (!panel_failed) {
+            UtilityFunctions::print("AoA ", aoa, " deg: STABLE (Max CL: ", max_observed_cl, ")");
+        }
+    }
+
+    UtilityFunctions::print("--- VLM Range & Stability Test Finished ---");
 }
 
 void VLMTester::run_aoa_sweep_test() {

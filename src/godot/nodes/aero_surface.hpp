@@ -25,6 +25,11 @@ protected:
         double cd = 0.0;
         Vector3 lift_vector;
         Vector3 drag_vector;
+
+        Vector3 v1_4_left;
+        Vector3 v1_4_right;
+        Vector3 v3_4_left;
+        Vector3 v3_4_right;
     };
 
     Vector<SubSection> subsections;
@@ -91,6 +96,10 @@ public:
     Vector3 compute_force(Variant p_state) override;
 
     void _process(double delta) override;
+
+    TypedArray<Dictionary> get_vortices() const;
+    TypedArray<Dictionary> get_subsections() const; // New
+    Vector3 get_force_cache() const { return force_cache; }
 };
 
 } // namespace godot

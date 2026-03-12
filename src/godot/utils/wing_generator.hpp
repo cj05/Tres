@@ -21,6 +21,11 @@ struct WingSubsection {
     double chord;
     Ref<AirfoilResource> airfoil;
     double span;
+
+    Vector3 v1_4_left;
+    Vector3 v1_4_right;
+    Vector3 v3_4_left;
+    Vector3 v3_4_right;
 };
 
 class WingGenerator {

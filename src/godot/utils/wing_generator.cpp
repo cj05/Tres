@@ -44,6 +44,12 @@ Vector<WingSubsection> WingGenerator::generate_subsections(const Vector<WingStat
         int num_sub = (int)Math::round(segment_span * segments_per_meter);
         if (num_sub < 1) num_sub = 1;
 
+        // Precompute station corner points in global space
+        Vector3 s1_1_4 = s1.transform.xform(Vector3(0.25 * s1.chord, 0, 0));
+        Vector3 s1_3_4 = s1.transform.xform(Vector3(0.75 * s1.chord, 0, 0));
+        Vector3 s2_1_4 = s2.transform.xform(Vector3(0.25 * s2.chord, 0, 0));
+        Vector3 s2_3_4 = s2.transform.xform(Vector3(0.75 * s2.chord, 0, 0));
+
         for (int j = 0; j < num_sub; j++) {
             double t1 = (double)j / num_sub;
             double t2 = (double)(j + 1) / num_sub;
@@ -55,13 +61,20 @@ Vector<WingSubsection> WingGenerator::generate_subsections(const Vector<WingStat
             // Apply twist interpolation if needed
             double twist = Math::lerp(s1.twist, s2.twist, mid);
             if (Math::abs(twist) > 1e-6) {
-                sub.transform.basis = sub.transform.basis.rotated(sub.transform.basis.xform(Vector3(0, 0, 1)), Math::deg_to_rad(twist));
+                sub.transform.basis = sub.transform.basis.rotated(sub.transform.basis.get_column(0), Math::deg_to_rad(twist));
             }
 
             sub.chord = Math::lerp(s1.chord, s2.chord, mid);
             sub.airfoil = (mid < 0.5) ? s1.airfoil : s2.airfoil;
             sub.span = segment_span * (t2 - t1);
             sub.area = sub.span * sub.chord;
+
+            // Interpolate swept VLM points
+            sub.v1_4_left = s1_1_4.lerp(s2_1_4, t1);
+            sub.v1_4_right = s1_1_4.lerp(s2_1_4, t2);
+            sub.v3_4_left = s1_3_4.lerp(s2_3_4, t1);
+            sub.v3_4_right = s1_3_4.lerp(s2_3_4, t2);
+
             subsections.push_back(sub);
         }
     }

@@ -110,15 +110,15 @@ Vector3 VLMModel::calculate_induced_velocity(const Vector3& p, const Vector3& v1
     Real r2_mag = r2.length();
     if (r1_mag < 1e-9 || r2_mag < 1e-9) return Vector3();
 
-    // RANKINE CORE: Cap the denominator
-    // This stops the 'sweep oscillation' by capping the max influence
-    Real effective_mag2 = std::max(r1xr2_mag2, core_radius2);
-
     Vector3 r0 = v2 - v1;
-    Real dot_term = r0.dot(r1 / r1_mag - r2 / r2_mag);
-    Real factor = (gamma / (4.0 * M_PI)) * dot_term;
+    Real factor = (gamma / (4.0 * M_PI)) * (r0.dot(r1 / r1_mag - r2 / r2_mag));
     
-    return r1xr2 * (factor / effective_mag2);
+    // VATISTAS n=2 model: 
+    // This replaces the Rankine std::max logic. 
+    // It creates a smooth bell-curve for velocity that prevents the 3.232 AR spike.
+    Real denominator = std::sqrt(std::pow(r1xr2_mag2, 2) + std::pow(core_radius2, 2));
+    
+    return r1xr2 * (factor / denominator);
 }
 
 // 2. Update the caller

@@ -114,6 +114,10 @@ void AeroSurface::_generate_subsections() {
         s.area = ws.area;
         s.chord = ws.chord;
         s.airfoil = ws.airfoil;
+        s.v1_4_left = ws.v1_4_left;
+        s.v1_4_right = ws.v1_4_right;
+        s.v3_4_left = ws.v3_4_left;
+        s.v3_4_right = ws.v3_4_right;
         subsections.push_back(s);
     }
     dirty = true;
@@ -121,41 +125,38 @@ void AeroSurface::_generate_subsections() {
 
 void AeroSurface::_update_vortices() {
     vortices.clear();
+    Part *p = Object::cast_to<Part>(get_part());
+    if (!p) return;
+
+    // Transform from Part space (where WingGenerator points live) to AeroSurface local space
+    Transform3D part_to_local = get_global_transform().affine_inverse() * p->get_global_transform();
+
     for (int i = 0; i < subsections.size(); i++) {
         const SubSection &sub = subsections[i];
         Vortex v;
-        double panel_span = sub.area / sub.chord;
-        
-        // 1. Define tips in local space
-        Vector3 p_left = Vector3(0.25 * sub.chord, 0, -0.5 * panel_span);
-        Vector3 p_right = Vector3(0.25 * sub.chord, 0, 0.5 * panel_span);
-        
-        // 2. Transform to world space
-        v.left_tip = sub.transform.xform(p_left);
-        v.right_tip = sub.transform.xform(p_right);
-        v.collocation_point = sub.transform.xform(Vector3(0.75 * sub.chord, 0, 0));
-        
-        // 3. FORCE the normal to be the "Up" vector of the subsection
-        // If your wing is mirrored, the Basis might be 'flipped', 
-        // so we use the cross product to define the consistent orientation.
-        Vector3 local_up = sub.transform.basis.get_column(1).normalized(); // Y-axis
-        Vector3 span_dir = (v.right_tip - v.left_tip).normalized();
-        Vector3 chord_dir = (v.collocation_point - v.left_tip).normalized();
 
-        // 4. Recalculate normal based on geometry to ensure RHR
-        v.normal = span_dir.cross(chord_dir).normalized();
+        // Use pre-calculated swept points (transformed from Part to node-local space)
+        v.left_tip = part_to_local.xform(sub.v1_4_left);
+        v.right_tip = part_to_local.xform(sub.v1_4_right);
 
-        // 5. Flip check: If our geometric normal is opposite to the intended 
-        // 'Up' direction of the part, swap tips to maintain consistent circulation sign.
+        // Collocation point is the midpoint of the 3/4 chord line of this panel
+        Vector3 c_left = part_to_local.xform(sub.v3_4_left);
+        Vector3 c_right = part_to_local.xform(sub.v3_4_right);
+        v.collocation_point = (c_left + c_right) * 0.5;
+
+        // Normal and Consistency (Standard VLM procedure)
+        // local_up is the intended 'Up' direction of the wing section
+        Vector3 local_up = part_to_local.basis.xform(sub.transform.basis.get_column(1)).normalized();
+        v.normal = (v.right_tip - v.left_tip).cross(v.collocation_point - v.left_tip).normalized();
+
         if (v.normal.dot(local_up) < 0) {
             Vector3 temp = v.left_tip;
             v.left_tip = v.right_tip;
             v.right_tip = temp;
-            // Re-calc normal so it points 'Up'
             v.normal = (v.right_tip - v.left_tip).cross(v.collocation_point - v.left_tip).normalized();
         }
 
-        v.span = panel_span;
+        v.span = sub.area / sub.chord;
         vortices.push_back(v);
     }
 }
@@ -187,7 +188,7 @@ void AeroSurface::_solve_vlm() {
 
     for (int i = 0; i < vortices.size(); i++) vortices.write[i].circulation = (double)panels[i].circulation;
 
-    if (debug_draw) {
+    if (false) {
         UtilityFunctions::print("--- VLM Circulation Map [", get_name(), "] ---");
         for (int i = 0; i < vortices.size(); i++) {
             UtilityFunctions::print("  Panel ", i, ": ", vortices[i].circulation);
@@ -200,6 +201,12 @@ void AeroSurface::_update_debug_draw() {
     if (debug_mesh.is_null() || !debug_draw) return;
     debug_mesh->clear_surfaces();
     if (subsections.size() == 0) return;
+
+    Part *p = Object::cast_to<Part>(get_part());
+    if (!p) return;
+
+    // Transform from Part space to AeroSurface local space
+    Transform3D part_to_local = get_global_transform().affine_inverse() * p->get_global_transform();
 
     debug_mesh->surface_begin(Mesh::PRIMITIVE_LINES);
     Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
@@ -215,11 +222,12 @@ void AeroSurface::_update_debug_draw() {
 
     for (int i = 0; i < subsections.size(); i++) {
         const SubSection &sub = subsections[i];
+        Vector3 sub_origin_local = part_to_local.xform(sub.transform.origin);
         
         // 1. Draw Chord Line (Gray)
         debug_mesh->surface_set_color(Color(0.4, 0.4, 0.4));
-        debug_mesh->surface_add_vertex(sub.transform.origin);
-        debug_mesh->surface_add_vertex(sub.transform.origin + sub.transform.basis.xform(Vector3(sub.chord, 0, 0)));
+        debug_mesh->surface_add_vertex(sub_origin_local);
+        debug_mesh->surface_add_vertex(sub_origin_local + part_to_local.basis.xform(sub.transform.basis.xform(Vector3(sub.chord, 0, 0))));
 
         if (vlm_enabled && i < vortices.size()) {
             const Vortex &v = vortices[i];
@@ -240,8 +248,8 @@ void AeroSurface::_update_debug_draw() {
 
             // 4. Lift Vector (Cyan)
             debug_mesh->surface_set_color(Color(0, 1.0, 1.0));
-            debug_mesh->surface_add_vertex(sub.transform.origin);
-            debug_mesh->surface_add_vertex(sub.transform.origin + v.lift_vector * debug_force_scale);
+            debug_mesh->surface_add_vertex(sub_origin_local);
+            debug_mesh->surface_add_vertex(sub_origin_local + v.lift_vector * debug_force_scale);
             
             // 5. Collocation Point (Small cross)
             debug_mesh->surface_set_color(Color(1, 1, 0)); // Yellow
@@ -254,16 +262,17 @@ void AeroSurface::_update_debug_draw() {
         } else {
             // 6. Non-VLM Lift (Cyan) and Drag (Red)
             debug_mesh->surface_set_color(Color(0, 1.0, 1.0));
-            debug_mesh->surface_add_vertex(sub.transform.origin);
-            debug_mesh->surface_add_vertex(sub.transform.origin + sub.lift_vector * debug_force_scale);
+            debug_mesh->surface_add_vertex(sub_origin_local);
+            debug_mesh->surface_add_vertex(sub_origin_local + sub.lift_vector * debug_force_scale);
 
             debug_mesh->surface_set_color(Color(1.0, 0.2, 0.2));
-            debug_mesh->surface_add_vertex(sub.transform.origin);
-            debug_mesh->surface_add_vertex(sub.transform.origin + sub.drag_vector * debug_force_scale);
+            debug_mesh->surface_add_vertex(sub_origin_local);
+            debug_mesh->surface_add_vertex(sub_origin_local + sub.drag_vector * debug_force_scale);
         }
     }
     debug_mesh->surface_end();
 }
+
 
 void AeroSurface::physics_step(Variant p_state) {}
 
@@ -339,4 +348,36 @@ void AeroSurface::_process(double delta) {
     if (Engine::get_singleton()->is_editor_hint() || is_inside_tree()) {
         compute_force(Variant()); _update_debug_draw();
     }
+}
+
+
+TypedArray<Dictionary> AeroSurface::get_vortices() const {
+    TypedArray<Dictionary> result;
+    for (int i = 0; i < vortices.size(); i++) {
+        const Vortex &v = vortices[i];
+        Dictionary d;
+        d["left_tip"] = v.left_tip;
+        d["right_tip"] = v.right_tip;
+        d["collocation_point"] = v.collocation_point;
+        d["normal"] = v.normal;
+        d["circulation"] = v.circulation;
+        d["lift_vector"] = v.lift_vector;
+        d["lift"] = v.lift;
+        d["cl"] = v.cl;
+        d["span"] = v.span;
+        result.push_back(d);
+    }
+    return result;
+}
+
+TypedArray<Dictionary> AeroSurface::get_subsections() const {
+    TypedArray<Dictionary> result;
+    for (const auto& s : subsections) {
+        Dictionary d;
+        d["area"] = s.area;
+        d["chord"] = s.chord;
+        d["transform"] = s.transform;
+        result.push_back(d);
+    }
+    return result;
 }

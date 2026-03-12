@@ -25,6 +25,7 @@ public:
     void run_vlm_validation();
     void run_coherence_test();
     void run_cosine_spacing_test();
+    void run_range_stability_test();
     void run_aoa_sweep_test();
 };
 
