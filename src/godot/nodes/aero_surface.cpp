@@ -126,26 +126,36 @@ void AeroSurface::_update_vortices() {
         Vortex v;
         double panel_span = sub.area / sub.chord;
         
-        // Define tips in local subsection space
+        // 1. Define tips in local space
         Vector3 p_left = Vector3(0.25 * sub.chord, 0, -0.5 * panel_span);
         Vector3 p_right = Vector3(0.25 * sub.chord, 0, 0.5 * panel_span);
         
+        // 2. Transform to world space
         v.left_tip = sub.transform.xform(p_left);
         v.right_tip = sub.transform.xform(p_right);
         v.collocation_point = sub.transform.xform(Vector3(0.75 * sub.chord, 0, 0));
-        v.normal = sub.transform.basis.xform(Vector3(0, 1, 0)).normalized();
-        v.span = panel_span;
+        
+        // 3. FORCE the normal to be the "Up" vector of the subsection
+        // If your wing is mirrored, the Basis might be 'flipped', 
+        // so we use the cross product to define the consistent orientation.
+        Vector3 local_up = sub.transform.basis.get_column(1).normalized(); // Y-axis
+        Vector3 span_dir = (v.right_tip - v.left_tip).normalized();
+        Vector3 chord_dir = (v.collocation_point - v.left_tip).normalized();
 
-        // Ensure tips are ordered correctly relative to the normal (Right-Hand Rule)
-        // This is crucial for mirrored wings where the basis handedness is flipped.
-        Vector3 calculated_normal = (v.right_tip - v.left_tip).cross(v.collocation_point - v.left_tip);
-        if (calculated_normal.dot(v.normal) < 0) {
-            UtilityFunctions::print("AeroSurface Inverted, flipping points");
+        // 4. Recalculate normal based on geometry to ensure RHR
+        v.normal = span_dir.cross(chord_dir).normalized();
+
+        // 5. Flip check: If our geometric normal is opposite to the intended 
+        // 'Up' direction of the part, swap tips to maintain consistent circulation sign.
+        if (v.normal.dot(local_up) < 0) {
             Vector3 temp = v.left_tip;
             v.left_tip = v.right_tip;
             v.right_tip = temp;
+            // Re-calc normal so it points 'Up'
+            v.normal = (v.right_tip - v.left_tip).cross(v.collocation_point - v.left_tip).normalized();
         }
 
+        v.span = panel_span;
         vortices.push_back(v);
     }
 }
@@ -279,7 +289,8 @@ Vector3 AeroSurface::compute_force(Variant p_state) {
         for (int i = 0; i < vortices.size(); i++) {
             Vortex &v = vortices.write[i];
             Vector3 bound_vector = (v.right_tip - v.left_tip);
-            Vector3 force = bound_vector.cross(local_wind_node) * (rho * v.circulation);
+            // Standard Kutta-Joukowski: F = rho * (V x dl * Gamma)
+            Vector3 force = local_wind_node.cross(bound_vector) * (rho * v.circulation);
             
             v.lift_vector = force;
             v.lift = force.dot(v.normal);

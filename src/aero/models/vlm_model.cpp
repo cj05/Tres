@@ -115,7 +115,9 @@ Vector3 VLMModel::calculate_induced_velocity(const Vector3& p, const Vector3& v1
 
 Vector3 VLMModel::calculate_horseshoe_velocity(const Vector3& p, const VLMPanel& panel, Real gamma, const Vector3& wind_dir) {
     Vector3 v_total;
-    v_total += calculate_induced_velocity(p, panel.left_tip, panel.right_tip, gamma);
+    // Swap left and right tip to align with the standard RHS convention where 
+    // positive circulation (along span) produces downwash behind the bound vortex.
+    v_total += calculate_induced_velocity(p, panel.right_tip, panel.left_tip, gamma);
 
     auto semi_inf = [&](const Vector3& P1, const Vector3& D, Real G) {
         Vector3 r1 = p - P1;
