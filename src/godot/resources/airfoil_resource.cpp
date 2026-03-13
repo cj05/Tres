@@ -39,11 +39,16 @@ PackedVector2Array AirfoilResource::get_outline_points() const {
 }
 
 void AirfoilResource::set_coefficients(const Ref<CoefficientCurve> &p_coefficients) {
-    coefficients = p_coefficients;
+    if (p_coefficients.is_valid()) {
+        coefficients = p_coefficients;
+    }
     emit_changed();
 }
 
 Ref<CoefficientCurve> AirfoilResource::get_coefficients() const {
+    if (coefficients.is_null()) {
+        const_cast<AirfoilResource*>(this)->coefficients.instantiate();
+    }
     return coefficients;
 }
 
