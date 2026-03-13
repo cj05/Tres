@@ -33,7 +33,7 @@ namespace aero {
         for (int i = 0; i < N; i++) {
             b[i] = -wind_velocity.dot(panels[i].normal);
             for (int j = 0; j < N; j++) {
-                Vector3 v_unit = calculate_horseshoe_velocity(panels[i].collocation_point, panels[j], 1.0, stable_wake_dir);
+                Vector3 v_unit = calculate_horseshoe_velocity(panels[i].collocation_point, panels[j], 1.0, wind_dir);
                 A[i * N + j] = v_unit.dot(panels[i].normal);
             }
         }
