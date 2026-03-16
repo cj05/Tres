@@ -33,6 +33,8 @@ void AeroSurface::_bind_methods() {
     ClassDB::bind_method(D_METHOD("get_wind_velocity"), &AeroSurface::get_wind_velocity);
     ClassDB::bind_method(D_METHOD("set_vlm_enabled", "enabled"), &AeroSurface::set_vlm_enabled);
     ClassDB::bind_method(D_METHOD("is_vlm_enabled"), &AeroSurface::is_vlm_enabled);
+    ClassDB::bind_method(D_METHOD("set_dynamic_stall_enabled", "enabled"), &AeroSurface::set_dynamic_stall_enabled);
+    ClassDB::bind_method(D_METHOD("is_dynamic_stall_enabled"), &AeroSurface::is_dynamic_stall_enabled);
     ClassDB::bind_method(D_METHOD("set_debug_force_scale", "scale"), &AeroSurface::set_debug_force_scale);
     ClassDB::bind_method(D_METHOD("get_debug_force_scale"), &AeroSurface::get_debug_force_scale);
     ClassDB::bind_method(D_METHOD("get_force_cache"), &AeroSurface::get_force_cache);
@@ -46,6 +48,7 @@ void AeroSurface::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_cosine_spacing"), "set_use_cosine_spacing", "get_use_cosine_spacing");
     ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "wind_velocity"), "set_wind_velocity", "get_wind_velocity");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "vlm_enabled"), "set_vlm_enabled", "is_vlm_enabled");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "dynamic_stall_enabled"), "set_dynamic_stall_enabled", "is_dynamic_stall_enabled");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "debug_force_scale"), "set_debug_force_scale", "get_debug_force_scale");
     ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "current_force", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY), "", "get_force_cache");
 }
@@ -98,6 +101,13 @@ void AeroSurface::set_vlm_enabled(bool p_enabled) {
     dirty = true;
 }
 bool AeroSurface::is_vlm_enabled() const { return vlm_enabled; }
+
+void AeroSurface::set_dynamic_stall_enabled(bool p_enabled) {
+    if (dynamic_stall_enabled == p_enabled) return;
+    dynamic_stall_enabled = p_enabled;
+    dirty = true;
+}
+bool AeroSurface::is_dynamic_stall_enabled() const { return dynamic_stall_enabled; }
 
 void AeroSurface::set_debug_force_scale(double p_scale) { debug_force_scale = p_scale; }
 double AeroSurface::get_debug_force_scale() const { return debug_force_scale; }
@@ -161,29 +171,20 @@ void AeroSurface::_update_vortices() {
     Part *p = Object::cast_to<Part>(get_part());
     if (!p) return;
 
-    // Transform from Part space (where WingGenerator points live) to AeroSurface local space
     Transform3D part_to_local = get_global_transform().affine_inverse() * p->get_global_transform();
 
     for (int i = 0; i < subsections.size(); i++) {
         const SubSection &sub = subsections[i];
         Vortex v;
 
-        // Use pre-calculated swept points (transformed from Part to node-local space)
         v.left_tip = part_to_local.xform(sub.v1_4_left);
         v.right_tip = part_to_local.xform(sub.v1_4_right);
 
-        // Collocation point is the midpoint of the 3/4 chord line of this panel
         Vector3 c_left = part_to_local.xform(sub.v3_4_left);
         Vector3 c_right = part_to_local.xform(sub.v3_4_right);
         v.collocation_point = (c_left + c_right) * 0.5;
 
-        // Normal and Consistency (Standard VLM procedure)
-        // local_up is the intended 'Up' direction of the wing section (already twist-aware in sub.transform)
         Vector3 local_up = part_to_local.basis.xform(sub.transform.basis.get_column(1)).normalized();
-        
-        // Calculate normal from twist-aware geometry
-        // (right - left) is the spanwise vector
-        // (collocation - midpoint_of_1/4) is the chordwise vector
         Vector3 mid_1_4 = (v.left_tip + v.right_tip) * 0.5;
         v.normal = (v.right_tip - v.left_tip).cross(v.collocation_point - mid_1_4).normalized();
 
@@ -192,7 +193,8 @@ void AeroSurface::_update_vortices() {
         }
 
         v.span = sub.area / sub.chord;
-        vortices.push_back(v);
+        v.stall_model = std::make_unique<aero::CirculationLagModel>(2.0);
+        vortices.push_back(std::move(v));
     }
 }
 
@@ -219,11 +221,7 @@ void AeroSurface::_solve_vlm() {
         UtilityFunctions::print("  - Local Wind: ", local_wind_node);
     }
 
-    
-
     for (int i = 0; i < vortices.size(); i++) vortices.write[i].circulation = (double)panels[i].circulation;
-
-    _analyze_wake();
 }
 
 void AeroSurface::_analyze_wake() {
@@ -231,53 +229,34 @@ void AeroSurface::_analyze_wake() {
     wake_clusters.clear();
     if (vortices.size() == 0) return;
 
-    // 1. Compute Shed Vorticity and Wake Direction at each Joint
-    // For N panels, we have N+1 trailing filaments
-    
     // Leg 0: Left tip of panel 0
     TrailingFilament f_start;
     f_start.pos = vortices[0].left_tip;
     f_start.strength = vortices[0].circulation;
-
     aero::VLMPanel p0;
-    p0.left_tip = to_aero(vortices[0].left_tip);
-    p0.right_tip = to_aero(vortices[0].right_tip);
-    p0.collocation_point = to_aero(vortices[0].collocation_point);
+    p0.left_tip = to_aero(vortices[0].left_tip); p0.right_tip = to_aero(vortices[0].right_tip); p0.collocation_point = to_aero(vortices[0].collocation_point);
     f_start.direction = from_aero(aero::VLMModel::get_panel_wake_dir(p0));
     trailing_filaments.push_back(f_start);
 
-    // Legs 1 to N-1: Joints between panels
     for (int i = 0; i < vortices.size() - 1; i++) {
         TrailingFilament f;
         f.pos = (vortices[i].right_tip + vortices[i+1].left_tip) * 0.5;
         f.strength = vortices[i+1].circulation - vortices[i].circulation;
-        // Average wake direction of adjacent panels
         aero::VLMPanel p1, p2;
-        p1.left_tip = to_aero(vortices[i].left_tip);
-        p1.right_tip = to_aero(vortices[i].right_tip);
-        p1.collocation_point = to_aero(vortices[i].collocation_point);
-        p2.left_tip = to_aero(vortices[i+1].left_tip);
-        p2.right_tip = to_aero(vortices[i+1].right_tip);
-        p2.collocation_point = to_aero(vortices[i+1].collocation_point);
-
-        Vector3 d1 = from_aero(aero::VLMModel::get_panel_wake_dir(p1));
-        Vector3 d2 = from_aero(aero::VLMModel::get_panel_wake_dir(p2));
-        f.direction = (d1 + d2).normalized();
+        p1.left_tip = to_aero(vortices[i].left_tip); p1.right_tip = to_aero(vortices[i].right_tip); p1.collocation_point = to_aero(vortices[i].collocation_point);
+        p2.left_tip = to_aero(vortices[i+1].left_tip); p2.right_tip = to_aero(vortices[i+1].right_tip); p2.collocation_point = to_aero(vortices[i+1].collocation_point);
+        f.direction = (from_aero(aero::VLMModel::get_panel_wake_dir(p1)) + from_aero(aero::VLMModel::get_panel_wake_dir(p2))).normalized();
         trailing_filaments.push_back(f);
     }
 
-    // Leg N: Right tip of last panel
     TrailingFilament f_end;
     f_end.pos = vortices[vortices.size() - 1].right_tip;
     f_end.strength = -vortices[vortices.size() - 1].circulation;
     aero::VLMPanel pN;
-    pN.left_tip = to_aero(vortices[vortices.size()-1].left_tip);
-    pN.right_tip = to_aero(vortices[vortices.size()-1].right_tip);
-    pN.collocation_point = to_aero(vortices[vortices.size()-1].collocation_point);
+    pN.left_tip = to_aero(vortices[vortices.size()-1].left_tip); pN.right_tip = to_aero(vortices[vortices.size()-1].right_tip); pN.collocation_point = to_aero(vortices[vortices.size()-1].collocation_point);
     f_end.direction = from_aero(aero::VLMModel::get_panel_wake_dir(pN));
     trailing_filaments.push_back(f_end);
 
-    // 2. Identify Candidates and Cluster
     double max_shed = 0.001;
     for (const auto& f : trailing_filaments) max_shed = MAX(max_shed, Math::abs(f.strength));
     double threshold = vortex_threshold_factor * max_shed;
@@ -285,63 +264,27 @@ void AeroSurface::_analyze_wake() {
     int current_start = -1;
     for (int i = 0; i < trailing_filaments.size(); i++) {
         bool is_candidate = Math::abs(trailing_filaments[i].strength) > threshold;
-
         if (is_candidate) {
             if (current_start == -1) current_start = i;
-        } else {
-            if (current_start != -1) {
-                // End of cluster
-                VortexStructure vs;
-                vs.segment_start = current_start;
-                vs.segment_end = i - 1;
-                
-                Vector3 sum_pos;
-                double sum_strength = 0;
-                vs.bounding_box = AABB(trailing_filaments[current_start].pos, Vector3());
-
-                for (int k = current_start; k < i; k++) {
-                    double s = trailing_filaments[k].strength;
-                    sum_pos += trailing_filaments[k].pos * Math::abs(s);
-                    sum_strength += s;
-                    vs.bounding_box.expand_to(trailing_filaments[k].pos);
-                }
-
-                vs.strength = sum_strength;
-                vs.center = sum_pos / MAX(1e-6, Math::abs(sum_strength));
-                // Expand BBox slightly in chord direction
-                Vector3 avg_dir;
-                for (int k = current_start; k < i; k++) avg_dir += trailing_filaments[k].direction;
-                avg_dir = avg_dir.normalized();
-                vs.direction = avg_dir;
-                vs.bounding_box.expand_to(vs.bounding_box.position + avg_dir * 2.0);
-
-                wake_clusters.push_back(vs);
-                current_start = -1;
+        } else if (current_start != -1) {
+            VortexStructure vs;
+            vs.segment_start = current_start; vs.segment_end = i - 1;
+            Vector3 sum_pos; double sum_strength = 0; vs.bounding_box = AABB(trailing_filaments[current_start].pos, Vector3());
+            Vector3 avg_dir;
+            for (int k = current_start; k < i; k++) {
+                double s = trailing_filaments[k].strength;
+                sum_pos += trailing_filaments[k].pos * Math::abs(s);
+                sum_strength += s;
+                vs.bounding_box.expand_to(trailing_filaments[k].pos);
+                avg_dir += trailing_filaments[k].direction;
             }
+            vs.strength = sum_strength;
+            vs.center = sum_pos / MAX(1e-6, Math::abs(sum_strength));
+            vs.direction = avg_dir.normalized();
+            vs.bounding_box.expand_to(vs.bounding_box.position + vs.direction * 2.0);
+            wake_clusters.push_back(vs);
+            current_start = -1;
         }
-    }
-    // Handle last cluster
-    if (current_start != -1) {
-        VortexStructure vs;
-        vs.segment_start = current_start;
-        vs.segment_end = trailing_filaments.size() - 1;
-        Vector3 sum_pos;
-        double sum_strength = 0;
-        vs.bounding_box = AABB(trailing_filaments[current_start].pos, Vector3());
-        Vector3 avg_dir;
-        for (int k = current_start; k < trailing_filaments.size(); k++) {
-            double s = trailing_filaments[k].strength;
-            sum_pos += trailing_filaments[k].pos * Math::abs(s);
-            sum_strength += s;
-            vs.bounding_box.expand_to(trailing_filaments[k].pos);
-            avg_dir += trailing_filaments[k].direction;
-        }
-        vs.strength = sum_strength;
-        vs.center = sum_pos / MAX(1e-6, Math::abs(sum_strength));
-        avg_dir = avg_dir.normalized();
-        vs.direction = avg_dir;
-        vs.bounding_box.expand_to(vs.bounding_box.position + avg_dir * 2.0);
-        wake_clusters.push_back(vs);
     }
 }
 
@@ -353,25 +296,18 @@ void AeroSurface::_update_debug_draw() {
     Part *p = Object::cast_to<Part>(get_part());
     if (!p) return;
 
-    // Transform from Part space to AeroSurface local space
     Transform3D part_to_local = get_global_transform().affine_inverse() * p->get_global_transform();
-
     debug_mesh->surface_begin(Mesh::PRIMITIVE_LINES);
     Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
     
-    // Find max circulation for normalized coloring
     double max_gamma = 0.01;
     if (vlm_enabled) {
-        for (int i = 0; i < vortices.size(); i++) {
-            max_gamma = MAX(max_gamma, Math::abs(vortices[i].circulation));
-        }
+        for (int i = 0; i < vortices.size(); i++) max_gamma = MAX(max_gamma, Math::abs(vortices[i].circulation));
     }
 
     for (int i = 0; i < subsections.size(); i++) {
         const SubSection &sub = subsections[i];
         Vector3 sub_origin_local = part_to_local.xform(sub.transform.origin);
-        
-        // 1. Draw Chord Line (Gray)
         debug_mesh->surface_set_color(Color(0.4, 0.4, 0.4));
         debug_mesh->surface_add_vertex(sub_origin_local);
         debug_mesh->surface_add_vertex(sub_origin_local + part_to_local.basis.xform(sub.transform.basis.xform(Vector3(sub.chord, 0, 0))));
@@ -379,102 +315,60 @@ void AeroSurface::_update_debug_draw() {
         if (vlm_enabled && i < vortices.size()) {
             const Vortex &v = vortices[i];
             double gamma_ratio = Math::abs(v.circulation) / max_gamma;
-            
-            // 2. Bound Segment (Color based on Gamma: Blue -> Pink/White)
-            Color gamma_color = Color(0.2, 0.5, 1.0).lerp(Color(1.0, 0.2, 0.8), gamma_ratio);
-            debug_mesh->surface_set_color(gamma_color);
+            debug_mesh->surface_set_color(Color(0.2, 0.5, 1.0).lerp(Color(1.0, 0.2, 0.8), gamma_ratio));
             debug_mesh->surface_add_vertex(v.left_tip);
             debug_mesh->surface_add_vertex(v.right_tip);
 
-            // 3. Horseshoe Trailing Legs (Fading Blue) - Only if not using influence draw
             if (!debug_influence_draw) {
-                aero::VLMPanel pj;
-                pj.left_tip = to_aero(v.left_tip);
-                pj.right_tip = to_aero(v.right_tip);
-                pj.collocation_point = to_aero(v.collocation_point);
+                aero::VLMPanel pj; pj.left_tip = to_aero(v.left_tip); pj.right_tip = to_aero(v.right_tip); pj.collocation_point = to_aero(v.collocation_point);
                 Vector3 local_chord_dir = from_aero(aero::VLMModel::get_panel_wake_dir(pj));
-
                 debug_mesh->surface_set_color(Color(0.1, 0.1, 0.5, 0.5));
-                debug_mesh->surface_add_vertex(v.left_tip);
-                debug_mesh->surface_add_vertex(v.left_tip + local_chord_dir * debug_vortex_scale * 10.0);
-                debug_mesh->surface_add_vertex(v.right_tip);
-                debug_mesh->surface_add_vertex(v.right_tip + local_chord_dir * debug_vortex_scale * 10.0);
+                debug_mesh->surface_add_vertex(v.left_tip); debug_mesh->surface_add_vertex(v.left_tip + local_chord_dir * debug_vortex_scale * 10.0);
+                debug_mesh->surface_add_vertex(v.right_tip); debug_mesh->surface_add_vertex(v.right_tip + local_chord_dir * debug_vortex_scale * 10.0);
             }
 
-            // 4. Lift Vector (Cyan)
             debug_mesh->surface_set_color(Color(0, 1.0, 1.0));
             debug_mesh->surface_add_vertex(sub_origin_local);
             debug_mesh->surface_add_vertex(sub_origin_local + (v.lift_vector / v.span) * debug_force_scale);
             
-            // 5. Collocation Point (Small cross)
-            debug_mesh->surface_set_color(Color(1, 1, 0)); // Yellow
-            Vector3 cp = v.collocation_point;
-            double s = 0.02;
+            debug_mesh->surface_set_color(Color(1, 1, 0));
+            Vector3 cp = v.collocation_point; double s = 0.02;
             debug_mesh->surface_add_vertex(cp + Vector3(s,0,0)); debug_mesh->surface_add_vertex(cp - Vector3(s,0,0));
             debug_mesh->surface_add_vertex(cp + Vector3(0,s,0)); debug_mesh->surface_add_vertex(cp - Vector3(0,s,0));
             debug_mesh->surface_add_vertex(cp + Vector3(0,0,s)); debug_mesh->surface_add_vertex(cp - Vector3(0,0,s));
-
-        } else {
-            // 6. Non-VLM Lift (Cyan) and Drag (Red)
-            debug_mesh->surface_set_color(Color(0, 1.0, 1.0));
-            debug_mesh->surface_add_vertex(sub_origin_local);
-            debug_mesh->surface_add_vertex(sub_origin_local + (sub.lift_vector / sub.span) * debug_force_scale);
-
-            debug_mesh->surface_set_color(Color(1.0, 0.2, 0.2));
-            debug_mesh->surface_add_vertex(sub_origin_local);
-            debug_mesh->surface_add_vertex(sub_origin_local + (sub.drag_vector / sub.span) * debug_force_scale);
         }
     }
 
-    // Wake Analysis Drawing
     if (vlm_enabled && debug_influence_draw) {
-        // A. Draw all trailing filaments (Vortex Sheet)
         for (const auto& f : trailing_filaments) {
-            debug_mesh->surface_set_color(Color(0.3, 0.3, 0.6, 0.3)); // Faint blue
-            debug_mesh->surface_add_vertex(f.pos);
-            debug_mesh->surface_add_vertex(f.pos + f.direction * 5.0);
+            debug_mesh->surface_set_color(Color(0.3, 0.3, 0.6, 0.3));
+            debug_mesh->surface_add_vertex(f.pos); debug_mesh->surface_add_vertex(f.pos + f.direction * 5.0);
         }
-
-        // B. Draw Coherent Vortices (Thicker representation)
         for (const auto& cluster : wake_clusters) {
-            Color c = (cluster.strength > 0) ? Color(1, 0.5, 0.2) : Color(0.2, 0.5, 1); // Orange/Blue
-            debug_mesh->surface_set_color(c);
-            
-            // Draw multiple lines for thickness
+            debug_mesh->surface_set_color((cluster.strength > 0) ? Color(1, 0.5, 0.2) : Color(0.2, 0.5, 1));
             for (int k = cluster.segment_start; k <= cluster.segment_end; k++) {
-                debug_mesh->surface_add_vertex(trailing_filaments[k].pos);
-                debug_mesh->surface_add_vertex(trailing_filaments[k].pos + trailing_filaments[k].direction * 5.0);
+                debug_mesh->surface_add_vertex(trailing_filaments[k].pos); debug_mesh->surface_add_vertex(trailing_filaments[k].pos + trailing_filaments[k].direction * 5.0);
             }
-
-            // C. Bounding Box
-            debug_mesh->surface_set_color(Color(1, 1, 1, 0.4)); // White transparent
+            debug_mesh->surface_set_color(Color(1, 1, 1, 0.4));
             AABB b = cluster.bounding_box;
-            // Draw AABB lines
-            Vector3 v[8] = {
-                b.position, b.position + Vector3(b.size.x, 0, 0),
-                b.position + Vector3(b.size.x, b.size.y, 0), b.position + Vector3(0, b.size.y, 0),
-                b.position + Vector3(0, 0, b.size.z), b.position + Vector3(b.size.x, 0, b.size.z),
-                b.position + b.size, b.position + Vector3(0, b.size.y, b.size.z)
-            };
+            Vector3 vertices[8] = { b.position, b.position + Vector3(b.size.x, 0, 0), b.position + Vector3(b.size.x, b.size.y, 0), b.position + Vector3(0, b.size.y, 0), b.position + Vector3(0, 0, b.size.z), b.position + Vector3(b.size.x, 0, b.size.z), b.position + b.size, b.position + Vector3(0, b.size.y, b.size.z) };
             int indices[24] = {0,1,1,2,2,3,3,0, 4,5,5,6,6,7,7,4, 0,4,1,5,2,6,3,7};
-            for (int j = 0; j < 24; j++) debug_mesh->surface_add_vertex(v[indices[j]]);
+            for (int j = 0; j < 24; j++) debug_mesh->surface_add_vertex(vertices[indices[j]]);
         }
     }
-
     debug_mesh->surface_end();
 }
-
 
 void AeroSurface::physics_step(Variant p_state) {}
 
 Vector3 AeroSurface::compute_force(Variant p_state) {
     Transform3D current_transform = get_global_transform();
     Vector3 local_wind_node = current_transform.basis.xform_inv(wind_velocity);
+    double dt = 1.0 / 60.0;
+    if (p_state.get_type() == Variant::FLOAT) dt = p_state;
+    else if (p_state.get_type() == Variant::DICTIONARY) { Dictionary d = p_state; if (d.has("dt")) dt = d["dt"]; }
 
-    // Check if we can use cached results
-    if (!dirty && 
-        local_wind_node.is_equal_approx(last_local_wind) && 
-        current_transform.is_equal_approx(last_transform)) {
+    if (!dynamic_stall_enabled && !dirty && local_wind_node.is_equal_approx(last_local_wind) && current_transform.is_equal_approx(last_transform)) {
         return current_transform.basis.xform(force_cache);
     }
 
@@ -483,81 +377,65 @@ Vector3 AeroSurface::compute_force(Variant p_state) {
     double speed = local_wind_node.length();
 
     if (vlm_enabled) {
-        _update_vortices();
+        if (dirty || vortices.size() == 0) _update_vortices();
         _solve_vlm();
-        _analyze_wake();
 
         for (int i = 0; i < vortices.size(); i++) {
             Vortex &v = vortices.write[i];
-            // Fix: Lift slope was inverted. Using left - right restores positive dCl/dAlpha.
-            Vector3 bound_vector = (v.left_tip - v.right_tip);
-            // Standard Kutta-Joukowski: F = rho * (V x dl * Gamma)
-            Vector3 force = local_wind_node.cross(bound_vector) * (rho * v.circulation);
-            
-            v.lift_vector = force;
-            v.lift = force.dot(v.normal);
-            
-            // Cl calculation: (2 * L) / (rho * v^2 * S)
-            double dyn_press = 0.5 * rho * speed * speed;
-            v.cl = (speed > 0.1) ? v.lift / (dyn_press * subsections[i].area) : 0.0;
-            
+            double cl_vlm = (speed > 0.1) ? (2.0 * v.circulation) / (speed * subsections[i].chord) : 0.0;
+            v.cl_vlm = cl_vlm;
+
+            if (dynamic_stall_enabled && v.stall_model) {
+                Part *p = Object::cast_to<Part>(get_part());
+                Transform3D part_to_local = current_transform.affine_inverse() * p->get_global_transform();
+                Transform3D sub_tf_local = part_to_local * subsections[i].transform;
+                Vector3 sub_wind = sub_tf_local.basis.xform_inv(local_wind_node);
+                double alpha = aero::compute_aoa(to_aero(sub_wind));
+                aero::StallInput in; in.alpha = alpha; in.alpha_dot = (alpha - v.last_alpha) / dt; in.velocity = speed; in.chord = subsections[i].chord; in.cl_vlm = cl_vlm; in.dt = dt;
+                aero::StallOutput out = v.stall_model->update(in);
+                v.cl = out.cl_corrected; v.last_alpha = alpha;
+                v.circulation = (v.cl * speed * subsections[i].chord) / 2.0;
+            } else {
+                v.cl = cl_vlm;
+            }
+
+            Vector3 force = local_wind_node.cross(v.left_tip - v.right_tip) * (rho * v.circulation);
+            v.lift_vector = force; v.lift = force.dot(v.normal);
             total_force_local += force;
         }
+        _analyze_wake();
     } else {
         aero::FlatPlateModel model;
         for (int i = 0; i < subsections.size(); i++) {
             SubSection &sub = subsections.write[i];
             Vector3 local_vel = sub.transform.basis.xform_inv(local_wind_node);
             double s_sub = local_vel.length();
-            if (s_sub < 0.1) {
-                sub.lift_vector = sub.drag_vector = Vector3();
-                continue;
-            }
-            double alpha = Math::atan2(-local_vel.y, -local_vel.x);
-            aero::AeroInput in;
-            in.rho = rho;
-            in.speed = s_sub;
-            in.alpha = alpha;
-            in.area = sub.area;
-            in.chord = sub.chord;
+            if (s_sub < 0.1) { sub.lift_vector = sub.drag_vector = Vector3(); continue; }
+            double alpha = aero::compute_aoa(to_aero(local_vel));
+            aero::AeroInput in; in.rho = rho; in.speed = s_sub; in.alpha = alpha; in.area = sub.area; in.chord = sub.chord;
             aero::AeroOutput out = model.compute(in);
-            Vector3 l_dir = Vector3(-local_vel.y, local_vel.x, 0).normalized();
-            sub.lift_vector = sub.transform.basis.xform(l_dir * out.lift);
+            sub.lift_vector = sub.transform.basis.xform(Vector3(-local_vel.y, local_vel.x, 0).normalized() * out.lift);
             sub.drag_vector = sub.transform.basis.xform(-local_vel.normalized() * out.drag);
             total_force_local += sub.lift_vector + sub.drag_vector;
         }
     }
 
-    // Update cache
-    force_cache = total_force_local;
-    last_local_wind = local_wind_node;
-    last_transform = current_transform;
-    dirty = false;
-
+    force_cache = total_force_local; last_local_wind = local_wind_node; last_transform = current_transform; dirty = false;
     return current_transform.basis.xform(total_force_local);
 }
 
 void AeroSurface::_process(double delta) {
     if (Engine::get_singleton()->is_editor_hint() || is_inside_tree()) {
-        compute_force(Variant()); _update_debug_draw();
+        compute_force(Variant(delta)); _update_debug_draw();
     }
 }
-
 
 TypedArray<Dictionary> AeroSurface::get_vortices() const {
     TypedArray<Dictionary> result;
     for (int i = 0; i < vortices.size(); i++) {
         const Vortex &v = vortices[i];
         Dictionary d;
-        d["left_tip"] = v.left_tip;
-        d["right_tip"] = v.right_tip;
-        d["collocation_point"] = v.collocation_point;
-        d["normal"] = v.normal;
-        d["circulation"] = v.circulation;
-        d["lift_vector"] = v.lift_vector;
-        d["lift"] = v.lift;
-        d["cl"] = v.cl;
-        d["span"] = v.span;
+        d["left_tip"] = v.left_tip; d["right_tip"] = v.right_tip; d["collocation_point"] = v.collocation_point; d["normal"] = v.normal; d["circulation"] = v.circulation; d["lift_vector"] = v.lift_vector; d["lift"] = v.lift; d["cl"] = v.cl; d["cl_vlm"] = v.cl_vlm; d["span"] = v.span;
         result.push_back(d);
     }
     return result;
@@ -566,10 +444,7 @@ TypedArray<Dictionary> AeroSurface::get_vortices() const {
 TypedArray<Dictionary> AeroSurface::get_subsections() const {
     TypedArray<Dictionary> result;
     for (const auto& s : subsections) {
-        Dictionary d;
-        d["area"] = s.area;
-        d["chord"] = s.chord;
-        d["transform"] = s.transform;
+        Dictionary d; d["area"] = s.area; d["chord"] = s.chord; d["transform"] = s.transform;
         result.push_back(d);
     }
     return result;

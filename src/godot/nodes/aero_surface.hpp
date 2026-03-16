@@ -2,9 +2,11 @@
 
 #include "../core/aero_component.hpp"
 #include "aero_geometry.hpp"
+#include "aero/core/dynamic_stall.hpp"
 #include <godot_cpp/classes/mesh_instance3d.hpp>
 #include <godot_cpp/classes/immediate_mesh.hpp>
 #include <godot_cpp/classes/standard_material3d.hpp>
+#include <memory>
 
 namespace godot {
 
@@ -55,6 +57,7 @@ protected:
     bool debug_draw = true;
     bool debug_solve_results = false;
     bool vlm_enabled = true;
+    bool dynamic_stall_enabled = true;
     bool debug_influence_draw = false;
     double vortex_threshold_factor = 0.2;
     double debug_force_scale = 0.001; 
@@ -69,7 +72,10 @@ protected:
         double circulation = 0.0;
         double lift = 0.0;
         double cl = 0.0;
+        double cl_vlm = 0.0;
+        double last_alpha = 0.0;
         Vector3 lift_vector;
+        std::shared_ptr<aero::DynamicStallModel> stall_model;
     };
 
     Vector<Vortex> vortices;
@@ -122,6 +128,9 @@ public:
 
     void set_vlm_enabled(bool p_enabled);
     bool is_vlm_enabled() const;
+
+    void set_dynamic_stall_enabled(bool p_enabled);
+    bool is_dynamic_stall_enabled() const;
 
     void set_debug_force_scale(double p_scale);
     double get_debug_force_scale() const;

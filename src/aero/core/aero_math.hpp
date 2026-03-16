@@ -11,6 +11,16 @@ namespace aero {
 
 using Real = double;
 
+constexpr Real deg2rad(Real deg)
+{
+    return deg * M_PI / (Real)180.0;
+}
+
+constexpr Real rad2deg(Real rad)
+{
+    return rad * (Real)180.0 / M_PI;
+}
+
 struct Vector3 {
     Real x, y, z;
 
@@ -42,9 +52,15 @@ struct Vector3 {
         Real l = length();
         return (l > 1e-12) ? (*this) * (1.0 / l) : Vector3();
     }
+
 };
 
 template<typename T>
 using Vector = std::vector<T>;
+
+inline double compute_aoa(const Vector3 &local_velocity)
+{
+    return std::atan2(-local_velocity.y, -local_velocity.x);
+}
 
 } // namespace aero
