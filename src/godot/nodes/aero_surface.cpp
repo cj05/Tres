@@ -231,12 +231,19 @@ void AeroSurface::_analyze_wake() {
     wake_clusters.clear();
     if (vortices.size() == 0) return;
 
-    // 1. Compute Shed Vorticity at each Joint
+    // 1. Compute Shed Vorticity and Wake Direction at each Joint
     // For N panels, we have N+1 trailing filaments
+    
     // Leg 0: Left tip of panel 0
     TrailingFilament f_start;
     f_start.pos = vortices[0].left_tip;
     f_start.strength = vortices[0].circulation;
+
+    aero::VLMPanel p0;
+    p0.left_tip = to_aero(vortices[0].left_tip);
+    p0.right_tip = to_aero(vortices[0].right_tip);
+    p0.collocation_point = to_aero(vortices[0].collocation_point);
+    f_start.direction = from_aero(aero::VLMModel::get_panel_wake_dir(p0));
     trailing_filaments.push_back(f_start);
 
     // Legs 1 to N-1: Joints between panels
@@ -244,6 +251,18 @@ void AeroSurface::_analyze_wake() {
         TrailingFilament f;
         f.pos = (vortices[i].right_tip + vortices[i+1].left_tip) * 0.5;
         f.strength = vortices[i+1].circulation - vortices[i].circulation;
+        // Average wake direction of adjacent panels
+        aero::VLMPanel p1, p2;
+        p1.left_tip = to_aero(vortices[i].left_tip);
+        p1.right_tip = to_aero(vortices[i].right_tip);
+        p1.collocation_point = to_aero(vortices[i].collocation_point);
+        p2.left_tip = to_aero(vortices[i+1].left_tip);
+        p2.right_tip = to_aero(vortices[i+1].right_tip);
+        p2.collocation_point = to_aero(vortices[i+1].collocation_point);
+
+        Vector3 d1 = from_aero(aero::VLMModel::get_panel_wake_dir(p1));
+        Vector3 d2 = from_aero(aero::VLMModel::get_panel_wake_dir(p2));
+        f.direction = (d1 + d2).normalized();
         trailing_filaments.push_back(f);
     }
 
@@ -251,6 +270,11 @@ void AeroSurface::_analyze_wake() {
     TrailingFilament f_end;
     f_end.pos = vortices[vortices.size() - 1].right_tip;
     f_end.strength = -vortices[vortices.size() - 1].circulation;
+    aero::VLMPanel pN;
+    pN.left_tip = to_aero(vortices[vortices.size()-1].left_tip);
+    pN.right_tip = to_aero(vortices[vortices.size()-1].right_tip);
+    pN.collocation_point = to_aero(vortices[vortices.size()-1].collocation_point);
+    f_end.direction = from_aero(aero::VLMModel::get_panel_wake_dir(pN));
     trailing_filaments.push_back(f_end);
 
     // 2. Identify Candidates and Cluster
@@ -284,9 +308,12 @@ void AeroSurface::_analyze_wake() {
 
                 vs.strength = sum_strength;
                 vs.center = sum_pos / MAX(1e-6, Math::abs(sum_strength));
-                // Expand BBox slightly in wind direction
-                Vector3 wind_dir = get_global_transform().basis.xform_inv(wind_velocity).normalized();
-                vs.bounding_box.expand_to(vs.bounding_box.position + wind_dir * 2.0);
+                // Expand BBox slightly in chord direction
+                Vector3 avg_dir;
+                for (int k = current_start; k < i; k++) avg_dir += trailing_filaments[k].direction;
+                avg_dir = avg_dir.normalized();
+                vs.direction = avg_dir;
+                vs.bounding_box.expand_to(vs.bounding_box.position + avg_dir * 2.0);
 
                 wake_clusters.push_back(vs);
                 current_start = -1;
@@ -301,16 +328,19 @@ void AeroSurface::_analyze_wake() {
         Vector3 sum_pos;
         double sum_strength = 0;
         vs.bounding_box = AABB(trailing_filaments[current_start].pos, Vector3());
+        Vector3 avg_dir;
         for (int k = current_start; k < trailing_filaments.size(); k++) {
             double s = trailing_filaments[k].strength;
             sum_pos += trailing_filaments[k].pos * Math::abs(s);
             sum_strength += s;
             vs.bounding_box.expand_to(trailing_filaments[k].pos);
+            avg_dir += trailing_filaments[k].direction;
         }
         vs.strength = sum_strength;
         vs.center = sum_pos / MAX(1e-6, Math::abs(sum_strength));
-        Vector3 wind_dir = get_global_transform().basis.xform_inv(wind_velocity).normalized();
-        vs.bounding_box.expand_to(vs.bounding_box.position + wind_dir * 2.0);
+        avg_dir = avg_dir.normalized();
+        vs.direction = avg_dir;
+        vs.bounding_box.expand_to(vs.bounding_box.position + avg_dir * 2.0);
         wake_clusters.push_back(vs);
     }
 }
@@ -328,7 +358,6 @@ void AeroSurface::_update_debug_draw() {
 
     debug_mesh->surface_begin(Mesh::PRIMITIVE_LINES);
     Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
-    Vector3 wind_dir = local_wind_node.normalized();
     
     // Find max circulation for normalized coloring
     double max_gamma = 0.01;
@@ -359,11 +388,17 @@ void AeroSurface::_update_debug_draw() {
 
             // 3. Horseshoe Trailing Legs (Fading Blue) - Only if not using influence draw
             if (!debug_influence_draw) {
+                aero::VLMPanel pj;
+                pj.left_tip = to_aero(v.left_tip);
+                pj.right_tip = to_aero(v.right_tip);
+                pj.collocation_point = to_aero(v.collocation_point);
+                Vector3 local_chord_dir = from_aero(aero::VLMModel::get_panel_wake_dir(pj));
+
                 debug_mesh->surface_set_color(Color(0.1, 0.1, 0.5, 0.5));
                 debug_mesh->surface_add_vertex(v.left_tip);
-                debug_mesh->surface_add_vertex(v.left_tip + wind_dir * debug_vortex_scale * 10.0);
+                debug_mesh->surface_add_vertex(v.left_tip + local_chord_dir * debug_vortex_scale * 10.0);
                 debug_mesh->surface_add_vertex(v.right_tip);
-                debug_mesh->surface_add_vertex(v.right_tip + wind_dir * debug_vortex_scale * 10.0);
+                debug_mesh->surface_add_vertex(v.right_tip + local_chord_dir * debug_vortex_scale * 10.0);
             }
 
             // 4. Lift Vector (Cyan)
@@ -397,7 +432,7 @@ void AeroSurface::_update_debug_draw() {
         for (const auto& f : trailing_filaments) {
             debug_mesh->surface_set_color(Color(0.3, 0.3, 0.6, 0.3)); // Faint blue
             debug_mesh->surface_add_vertex(f.pos);
-            debug_mesh->surface_add_vertex(f.pos + wind_dir * 5.0);
+            debug_mesh->surface_add_vertex(f.pos + f.direction * 5.0);
         }
 
         // B. Draw Coherent Vortices (Thicker representation)
@@ -408,7 +443,7 @@ void AeroSurface::_update_debug_draw() {
             // Draw multiple lines for thickness
             for (int k = cluster.segment_start; k <= cluster.segment_end; k++) {
                 debug_mesh->surface_add_vertex(trailing_filaments[k].pos);
-                debug_mesh->surface_add_vertex(trailing_filaments[k].pos + wind_dir * 5.0);
+                debug_mesh->surface_add_vertex(trailing_filaments[k].pos + trailing_filaments[k].direction * 5.0);
             }
 
             // C. Bounding Box

@@ -44,6 +44,7 @@ protected:
 
     struct TrailingFilament {
         Vector3 pos;
+        Vector3 direction;
         double strength = 0.0;
     };
 

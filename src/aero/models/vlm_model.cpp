@@ -44,16 +44,19 @@ void VLMModel::build_influence_matrix(const Vector<VLMPanel>& p_panels, const Ve
         b[i] = -wind_velocity.dot(p_panels[i].normal);
 
         for (int j = 0; j < N; j++) {
-            // For stability at high AoA, we use the panel's chord direction for the wake
-            // instead of the free-stream wind direction. This keeps the influence matrix
-            // well-conditioned.
-            Vector3 mid_bound = (p_panels[j].left_tip + p_panels[j].right_tip) * 0.5;
-            Vector3 wake_dir = (p_panels[j].collocation_point - mid_bound).normalized();
+            // For stability at high AoA, we use a 'fixed-wake' model
+            // defined by the panel's geometry (chord-aligned)
+            Vector3 wake_dir = get_panel_wake_dir(p_panels[j]);
             
             Vector3 v_unit = calculate_horseshoe_velocity(p_panels[i].collocation_point, p_panels[j], 1.0, wake_dir);
             A[i * N + j] = v_unit.dot(p_panels[i].normal);
         }
     }
+}
+
+Vector3 VLMModel::get_panel_wake_dir(const VLMPanel& panel) {
+    Vector3 mid_bound = (panel.left_tip + panel.right_tip) * 0.5;
+    return (panel.collocation_point - mid_bound).normalized();
 }
 
 Vector3 VLMModel::calculate_induced_velocity(const Vector3& p, const Vector3& v1, const Vector3& v2, Real gamma, Real eps2) {
