@@ -28,8 +28,9 @@ void AeroGeometry::_generate_geometry() {
         PackedVector2Array resampled = get_resampled_points(s.airfoil);
         for (int j = 0; j < resampled.size(); j++) {
             Vector2 p2 = resampled[j];
+            // Airfoil is defined in XY plane, Z is spanwise
             Vector3 p3(p2.x * s.chord, p2.y * s.chord, 0);
-            p3 = p3.rotated(Vector3(1, 0, 0), Math::deg_to_rad(s.twist));
+            // Rotate p3 into global space using the station's transform (which includes twist)
             points_3d.append(s.transform.xform(p3));
         }
         all_stations_points.append(points_3d);

@@ -153,13 +153,16 @@ void AeroSurface::_update_vortices() {
         v.collocation_point = (c_left + c_right) * 0.5;
 
         // Normal and Consistency (Standard VLM procedure)
-        // local_up is the intended 'Up' direction of the wing section
+        // local_up is the intended 'Up' direction of the wing section (already twist-aware in sub.transform)
         Vector3 local_up = part_to_local.basis.xform(sub.transform.basis.get_column(1)).normalized();
-        v.normal = (v.right_tip - v.left_tip).cross(v.collocation_point - v.left_tip).normalized();
+        
+        // Calculate normal from twist-aware geometry
+        // (right - left) is the spanwise vector
+        // (collocation - midpoint_of_1/4) is the chordwise vector
+        Vector3 mid_1_4 = (v.left_tip + v.right_tip) * 0.5;
+        v.normal = (v.right_tip - v.left_tip).cross(v.collocation_point - mid_1_4).normalized();
 
         if (v.normal.dot(local_up) < 0) {
-            // Fix: Do NOT swap vertices as it breaks VLM topology (left/right adjacency).
-            // Just flip the normal vector.
             v.normal = -v.normal;
         }
 

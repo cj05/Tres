@@ -15,18 +15,27 @@ Vector<WingStation> WingGenerator::generate_stations(const Ref<AeroGeometryPrope
 
     TypedArray<WingSection> sections = props->get_sections();
     Transform3D current_tf;
+    double current_twist = 0.0;
     for (int i = 0; i < sections.size(); i++) {
         Ref<WingSection> s = sections[i];
         if (s.is_null()) continue;
 
-        current_tf.basis = current_tf.basis.rotated(Vector3(1, 0, 0), Math::deg_to_rad(s->get_dihedral_angle()));
+        // Apply dihedral and twist to the basis
+        // Dihedral is rotation around local X
+        current_tf.basis = current_tf.basis.rotated(current_tf.basis.get_column(0).normalized(), Math::deg_to_rad(s->get_dihedral_angle()));
+        // Twist is rotation around local Z
+        current_tf.basis = current_tf.basis.rotated(current_tf.basis.get_column(2).normalized(), Math::deg_to_rad(s->get_twist()));
+        
+        // Offset origin in the newly oriented basis (protrudes forward along twisted chord)
         current_tf.origin += current_tf.basis.xform(Vector3(s->get_sweep_offset(), 0, s->get_span_offset()));
+
+        current_twist += s->get_twist();
 
         WingStation st;
         st.transform = current_tf;
         st.chord = s->get_chord();
         st.airfoil = s->get_airfoil_data();
-        st.twist = s->get_twist();
+        st.twist = current_twist;
         stations.push_back(st);
     }
     return stations;
@@ -44,12 +53,6 @@ Vector<WingSubsection> WingGenerator::generate_subsections(const Vector<WingStat
         int num_sub = (int)Math::round(segment_span * segments_per_meter);
         if (num_sub < 1) num_sub = 1;
 
-        // Precompute station corner points in global space
-        Vector3 s1_1_4 = s1.transform.xform(Vector3(0.25 * s1.chord, 0, 0));
-        Vector3 s1_3_4 = s1.transform.xform(Vector3(0.75 * s1.chord, 0, 0));
-        Vector3 s2_1_4 = s2.transform.xform(Vector3(0.25 * s2.chord, 0, 0));
-        Vector3 s2_3_4 = s2.transform.xform(Vector3(0.75 * s2.chord, 0, 0));
-
         for (int j = 0; j < num_sub; j++) {
             double t1 = (double)j / num_sub;
             double t2 = (double)(j + 1) / num_sub;
@@ -57,23 +60,31 @@ Vector<WingSubsection> WingGenerator::generate_subsections(const Vector<WingStat
 
             WingSubsection sub;
             sub.transform.origin = s1.transform.origin.lerp(s2.transform.origin, mid);
+            // Slerp will now handle the smooth transition of twist since it's in the basis
             sub.transform.basis = s1.transform.basis.slerp(s2.transform.basis, mid);
-            // Apply twist interpolation if needed
-            double twist = Math::lerp(s1.twist, s2.twist, mid);
-            if (Math::abs(twist) > 1e-6) {
-                sub.transform.basis = sub.transform.basis.rotated(sub.transform.basis.get_column(0), Math::deg_to_rad(twist));
-            }
 
             sub.chord = Math::lerp(s1.chord, s2.chord, mid);
             sub.airfoil = (mid < 0.5) ? s1.airfoil : s2.airfoil;
             sub.span = segment_span * (t2 - t1);
             sub.area = sub.span * sub.chord;
 
-            // Interpolate swept VLM points
-            sub.v1_4_left = s1_1_4.lerp(s2_1_4, t1);
-            sub.v1_4_right = s1_1_4.lerp(s2_1_4, t2);
-            sub.v3_4_left = s1_3_4.lerp(s2_3_4, t1);
-            sub.v3_4_right = s1_3_4.lerp(s2_3_4, t2);
+            // To handle twist correctly in corners, we calculate basis at t1 and t2
+            auto get_tf = [&](double t) {
+                Transform3D tf;
+                tf.origin = s1.transform.origin.lerp(s2.transform.origin, t);
+                tf.basis = s1.transform.basis.slerp(s2.transform.basis, t);
+                return tf;
+            };
+
+            Transform3D tf_left = get_tf(t1);
+            Transform3D tf_right = get_tf(t2);
+            double chord_left = Math::lerp(s1.chord, s2.chord, t1);
+            double chord_right = Math::lerp(s1.chord, s2.chord, t2);
+
+            sub.v1_4_left = tf_left.xform(Vector3(0.25 * chord_left, 0, 0));
+            sub.v1_4_right = tf_right.xform(Vector3(0.25 * chord_right, 0, 0));
+            sub.v3_4_left = tf_left.xform(Vector3(0.75 * chord_left, 0, 0));
+            sub.v3_4_right = tf_right.xform(Vector3(0.75 * chord_right, 0, 0));
 
             subsections.push_back(sub);
         }
