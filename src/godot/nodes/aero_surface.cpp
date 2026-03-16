@@ -23,6 +23,8 @@ void AeroSurface::_bind_methods() {
     ClassDB::bind_method(D_METHOD("is_debug_solve_results"), &AeroSurface::is_debug_solve_results);
     ClassDB::bind_method(D_METHOD("set_segments_per_meter", "segments"), &AeroSurface::set_segments_per_meter);
     ClassDB::bind_method(D_METHOD("get_segments_per_meter"), &AeroSurface::get_segments_per_meter);
+    ClassDB::bind_method(D_METHOD("set_use_cosine_spacing", "enabled"), &AeroSurface::set_use_cosine_spacing);
+    ClassDB::bind_method(D_METHOD("get_use_cosine_spacing"), &AeroSurface::get_use_cosine_spacing);
     ClassDB::bind_method(D_METHOD("set_wind_velocity", "wind"), &AeroSurface::set_wind_velocity);
     ClassDB::bind_method(D_METHOD("get_wind_velocity"), &AeroSurface::get_wind_velocity);
     ClassDB::bind_method(D_METHOD("set_vlm_enabled", "enabled"), &AeroSurface::set_vlm_enabled);
@@ -35,6 +37,7 @@ void AeroSurface::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_draw"), "set_debug_draw", "is_debug_draw");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_solve_results"), "set_debug_solve_results", "is_debug_solve_results");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "segments_per_meter"), "set_segments_per_meter", "get_segments_per_meter");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_cosine_spacing"), "set_use_cosine_spacing", "get_use_cosine_spacing");
     ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "wind_velocity"), "set_wind_velocity", "get_wind_velocity");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "vlm_enabled"), "set_vlm_enabled", "is_vlm_enabled");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "debug_force_scale"), "set_debug_force_scale", "get_debug_force_scale");
@@ -60,6 +63,15 @@ void AeroSurface::set_segments_per_meter(double p_segments) {
 }
 
 double AeroSurface::get_segments_per_meter() const { return segments_per_meter; }
+
+void AeroSurface::set_use_cosine_spacing(bool p_enabled) {
+    if (use_cosine_spacing == p_enabled) return;
+    use_cosine_spacing = p_enabled;
+    dirty = true;
+    _generate_subsections();
+}
+
+bool AeroSurface::get_use_cosine_spacing() const { return use_cosine_spacing; }
 
 void AeroSurface::set_wind_velocity(Vector3 p_wind) {
     if (wind_velocity == p_wind) return;
@@ -114,13 +126,14 @@ void AeroSurface::_generate_subsections() {
         props->connect("changed", Callable(this, "_generate_subsections"));
 
     Vector<WingStation> stations = WingGenerator::generate_stations(props);
-    Vector<WingSubsection> wing_subs = WingGenerator::generate_subsections(stations, segments_per_meter);
+    Vector<WingSubsection> wing_subs = WingGenerator::generate_subsections(stations, segments_per_meter, use_cosine_spacing);
     
     for (const auto& ws : wing_subs) {
         SubSection s;
         s.transform = ws.transform;
         s.area = ws.area;
         s.chord = ws.chord;
+        s.span = ws.span;
         s.airfoil = ws.airfoil;
         s.v1_4_left = ws.v1_4_left;
         s.v1_4_right = ws.v1_4_right;
@@ -259,7 +272,7 @@ void AeroSurface::_update_debug_draw() {
             // 4. Lift Vector (Cyan)
             debug_mesh->surface_set_color(Color(0, 1.0, 1.0));
             debug_mesh->surface_add_vertex(sub_origin_local);
-            debug_mesh->surface_add_vertex(sub_origin_local + v.lift_vector * debug_force_scale);
+            debug_mesh->surface_add_vertex(sub_origin_local + (v.lift_vector / v.span) * debug_force_scale);
             
             // 5. Collocation Point (Small cross)
             debug_mesh->surface_set_color(Color(1, 1, 0)); // Yellow
@@ -273,11 +286,11 @@ void AeroSurface::_update_debug_draw() {
             // 6. Non-VLM Lift (Cyan) and Drag (Red)
             debug_mesh->surface_set_color(Color(0, 1.0, 1.0));
             debug_mesh->surface_add_vertex(sub_origin_local);
-            debug_mesh->surface_add_vertex(sub_origin_local + sub.lift_vector * debug_force_scale);
+            debug_mesh->surface_add_vertex(sub_origin_local + (sub.lift_vector / sub.span) * debug_force_scale);
 
             debug_mesh->surface_set_color(Color(1.0, 0.2, 0.2));
             debug_mesh->surface_add_vertex(sub_origin_local);
-            debug_mesh->surface_add_vertex(sub_origin_local + sub.drag_vector * debug_force_scale);
+            debug_mesh->surface_add_vertex(sub_origin_local + (sub.drag_vector / sub.span) * debug_force_scale);
         }
     }
     debug_mesh->surface_end();

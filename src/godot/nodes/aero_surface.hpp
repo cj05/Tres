@@ -18,6 +18,7 @@ protected:
         Transform3D transform;
         double area;
         double chord;
+        double span;
         Ref<AirfoilResource> airfoil;
         double lift = 0.0;
         double drag = 0.0;
@@ -34,6 +35,7 @@ protected:
 
     Vector<SubSection> subsections;
     double segments_per_meter = 4.0;
+    bool use_cosine_spacing = false;
     Vector3 wind_velocity = Vector3(20, 0, 0);
     bool debug_draw = true;
     bool debug_solve_results = false;
@@ -85,6 +87,9 @@ public:
 
     void set_segments_per_meter(double p_segments);
     double get_segments_per_meter() const;
+
+    void set_use_cosine_spacing(bool p_enabled);
+    bool get_use_cosine_spacing() const;
 
     void set_wind_velocity(Vector3 p_wind);
     Vector3 get_wind_velocity() const;

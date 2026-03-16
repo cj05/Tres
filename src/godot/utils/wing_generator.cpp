@@ -41,7 +41,7 @@ Vector<WingStation> WingGenerator::generate_stations(const Ref<AeroGeometryPrope
     return stations;
 }
 
-Vector<WingSubsection> WingGenerator::generate_subsections(const Vector<WingStation>& stations, double segments_per_meter) {
+Vector<WingSubsection> WingGenerator::generate_subsections(const Vector<WingStation>& stations, double segments_per_meter, bool use_cosine_spacing) {
     Vector<WingSubsection> subsections;
     if (stations.size() < 2) return subsections;
 
@@ -56,6 +56,12 @@ Vector<WingSubsection> WingGenerator::generate_subsections(const Vector<WingStat
         for (int j = 0; j < num_sub; j++) {
             double t1 = (double)j / num_sub;
             double t2 = (double)(j + 1) / num_sub;
+
+            if (use_cosine_spacing) {
+                t1 = (1.0 - Math::cos(t1 * Math_PI)) * 0.5;
+                t2 = (1.0 - Math::cos(t2 * Math_PI)) * 0.5;
+            }
+
             double mid = (t1 + t2) * 0.5;
 
             WingSubsection sub;

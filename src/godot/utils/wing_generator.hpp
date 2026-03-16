@@ -31,7 +31,7 @@ struct WingSubsection {
 class WingGenerator {
 public:
     static Vector<WingStation> generate_stations(const Ref<AeroGeometryProperties>& props);
-    static Vector<WingSubsection> generate_subsections(const Vector<WingStation>& stations, double segments_per_meter);
+    static Vector<WingSubsection> generate_subsections(const Vector<WingStation>& stations, double segments_per_meter, bool use_cosine_spacing = false);
 };
 
 } // namespace godot
