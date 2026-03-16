@@ -83,7 +83,7 @@ void VLMTester::run_vlm_validation() {
         Vector3 local_wind(20.0, 1.3, 0.0); // Air from front (+X) and below (+Y)
         aero_surface->set_wind_velocity(tf.basis.xform(local_wind));
         
-        aero_surface->compute_force(Variant());
+        (void)aero_surface->compute_force(Variant());
         TypedArray<Dictionary> v_data = aero_surface->get_vortices();
         
         if (v_data.size() > 0) {
@@ -112,7 +112,7 @@ void VLMTester::run_coherence_test() {
     _report("Starting VLM Coherence Test");
     if (!aero_surface) return;
 
-    aero_surface->compute_force(Variant());
+    (void)aero_surface->compute_force(Variant());
     
     double sum_individual_lift = 0.0;
     TypedArray<Dictionary> v_data = aero_surface->get_vortices();
@@ -195,7 +195,7 @@ void VLMTester::run_range_stability_test() {
         double rad = Math::deg_to_rad(aoa);
         Vector3 wind(speed * Math::cos(rad), speed * Math::sin(rad), 0.0);
         aero_surface->set_wind_velocity(wind);
-        aero_surface->compute_force(Variant());
+        (void)aero_surface->compute_force(Variant());
 
         TypedArray<Dictionary> v_data = aero_surface->get_vortices();
         bool failed = false;

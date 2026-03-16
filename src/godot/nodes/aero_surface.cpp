@@ -432,7 +432,7 @@ Vector3 AeroSurface::compute_force(Variant p_state) {
 
 void AeroSurface::_process(double delta) {
     if (Engine::get_singleton()->is_editor_hint() || is_inside_tree()) {
-        compute_force(Variant(delta)); _update_debug_draw();
+        (void)compute_force(Variant(delta)); _update_debug_draw();
     }
 }
 

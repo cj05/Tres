@@ -21,6 +21,7 @@ protected:
 
 public:
     static void build_ideal_baseline(const Ref<CoefficientCurve> &target, const Dictionary &clean_data);
+    static Dictionary get_trimmed_linear_core(const Dictionary &data);
 };
 
 } // namespace godot

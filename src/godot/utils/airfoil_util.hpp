@@ -5,6 +5,8 @@
 
 namespace godot {
 
+class AirfoilResource;
+
 class AirfoilUtil : public Object {
     GDCLASS(AirfoilUtil, Object);
 
@@ -13,7 +15,8 @@ protected:
     static bool _is_xfoil_format(const String &text);
 
 public:
-    static void import_from_text(const String &raw_text, const Ref<CoefficientCurve> &target);
+    static void import_from_text(const String &raw_text, const Ref<AirfoilResource> &target);
+    static Dictionary calculate_linear_regression(const PackedFloat32Array &alphas, const PackedFloat32Array &cls);
 };
 
 } // namespace godot

@@ -8,7 +8,7 @@ void CurvePrediction::_bind_methods() {
 }
 
 void CurvePrediction::build_ideal_baseline(const Ref<CoefficientCurve> &target, const Dictionary &clean_data) {
-    Dictionary data = _get_trimmed_linear_core(clean_data);
+    Dictionary data = get_trimmed_linear_core(clean_data);
 
     target->clear_all();
     PackedFloat32Array alphas = data["alpha"];
@@ -30,7 +30,7 @@ void CurvePrediction::_apply_idealized_extensions(const Ref<CoefficientCurve> &t
     // Note: GDScript had a typo _stall_start which I'll ignore or fix if I can find it.
 }
 
-Dictionary CurvePrediction::_get_trimmed_linear_core(const Dictionary &data) {
+Dictionary CurvePrediction::get_trimmed_linear_core(const Dictionary &data) {
     PackedFloat32Array alphas = data["alpha"];
     PackedFloat32Array cls = data["cl"];
 
@@ -51,6 +51,10 @@ Dictionary CurvePrediction::_get_trimmed_linear_core(const Dictionary &data) {
     out_dict["n_deep_stall"] = n_deep_stall;
 
     return out_dict;
+}
+
+Dictionary CurvePrediction::_get_trimmed_linear_core(const Dictionary &data) {
+    return get_trimmed_linear_core(data);
 }
 
 Dictionary CurvePrediction::_slice_range(const Dictionary &data, int start, int end) {
