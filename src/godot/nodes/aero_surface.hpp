@@ -26,6 +26,7 @@ protected:
         double drag = 0.0;
         double cl = 0.0;
         double cd = 0.0;
+        double alpha = 0.0;
         Vector3 lift_vector;
         Vector3 drag_vector;
 
@@ -73,6 +74,7 @@ protected:
         double lift = 0.0;
         double cl = 0.0;
         double cl_vlm = 0.0;
+        double alpha = 0.0;
         double last_alpha = 0.0;
         Vector3 lift_vector;
         std::shared_ptr<aero::DynamicStallModel> stall_model;
@@ -90,6 +92,7 @@ protected:
     bool dirty = true;
     Vector3 last_local_wind;
     Vector3 force_cache;
+    double aoa_cache = 0.0;
     Transform3D last_transform;
 
     void _generate_subsections();
@@ -144,6 +147,7 @@ public:
     TypedArray<Dictionary> get_vortices() const;
     TypedArray<Dictionary> get_subsections() const; // New
     Vector3 get_force_cache() const { return force_cache; }
+    double get_aoa() const { return aoa_cache; }
 };
 
 } // namespace godot

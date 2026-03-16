@@ -38,6 +38,7 @@ void AeroSurface::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_debug_force_scale", "scale"), &AeroSurface::set_debug_force_scale);
     ClassDB::bind_method(D_METHOD("get_debug_force_scale"), &AeroSurface::get_debug_force_scale);
     ClassDB::bind_method(D_METHOD("get_force_cache"), &AeroSurface::get_force_cache);
+    ClassDB::bind_method(D_METHOD("get_aoa"), &AeroSurface::get_aoa);
     ClassDB::bind_method(D_METHOD("_generate_subsections"), &AeroSurface::_generate_subsections);
 
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_draw"), "set_debug_draw", "is_debug_draw");
@@ -51,6 +52,7 @@ void AeroSurface::_bind_methods() {
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "dynamic_stall_enabled"), "set_dynamic_stall_enabled", "is_dynamic_stall_enabled");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "debug_force_scale"), "set_debug_force_scale", "get_debug_force_scale");
     ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "current_force", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY), "", "get_force_cache");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "current_aoa", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY), "", "get_aoa");
 }
 
 void AeroSurface::set_debug_draw(bool p_debug) {
@@ -364,6 +366,7 @@ void AeroSurface::physics_step(Variant p_state) {}
 Vector3 AeroSurface::compute_force(Variant p_state) {
     Transform3D current_transform = get_global_transform();
     Vector3 local_wind_node = current_transform.basis.xform_inv(wind_velocity);
+    aoa_cache = aero::compute_aoa(to_aero(local_wind_node));
     double dt = 1.0 / 60.0;
     if (p_state.get_type() == Variant::FLOAT) dt = p_state;
     else if (p_state.get_type() == Variant::DICTIONARY) { Dictionary d = p_state; if (d.has("dt")) dt = d["dt"]; }
@@ -385,12 +388,14 @@ Vector3 AeroSurface::compute_force(Variant p_state) {
             double cl_vlm = (speed > 0.1) ? (2.0 * v.circulation) / (speed * subsections[i].chord) : 0.0;
             v.cl_vlm = cl_vlm;
 
+            Part *p = Object::cast_to<Part>(get_part());
+            Transform3D part_to_local = current_transform.affine_inverse() * p->get_global_transform();
+            Transform3D sub_tf_local = part_to_local * subsections[i].transform;
+            Vector3 sub_wind = sub_tf_local.basis.xform_inv(local_wind_node);
+            double alpha = aero::compute_aoa(to_aero(sub_wind));
+            v.alpha = alpha;
+
             if (dynamic_stall_enabled && v.stall_model) {
-                Part *p = Object::cast_to<Part>(get_part());
-                Transform3D part_to_local = current_transform.affine_inverse() * p->get_global_transform();
-                Transform3D sub_tf_local = part_to_local * subsections[i].transform;
-                Vector3 sub_wind = sub_tf_local.basis.xform_inv(local_wind_node);
-                double alpha = aero::compute_aoa(to_aero(sub_wind));
                 aero::StallInput in; in.alpha = alpha; in.alpha_dot = (alpha - v.last_alpha) / dt; in.velocity = speed; in.chord = subsections[i].chord; in.cl_vlm = cl_vlm; in.dt = dt;
                 aero::StallOutput out = v.stall_model->update(in);
                 v.cl = out.cl_corrected; v.last_alpha = alpha;
@@ -412,6 +417,7 @@ Vector3 AeroSurface::compute_force(Variant p_state) {
             double s_sub = local_vel.length();
             if (s_sub < 0.1) { sub.lift_vector = sub.drag_vector = Vector3(); continue; }
             double alpha = aero::compute_aoa(to_aero(local_vel));
+            sub.alpha = alpha;
             aero::AeroInput in; in.rho = rho; in.speed = s_sub; in.alpha = alpha; in.area = sub.area; in.chord = sub.chord;
             aero::AeroOutput out = model.compute(in);
             sub.lift_vector = sub.transform.basis.xform(Vector3(-local_vel.y, local_vel.x, 0).normalized() * out.lift);
@@ -435,7 +441,7 @@ TypedArray<Dictionary> AeroSurface::get_vortices() const {
     for (int i = 0; i < vortices.size(); i++) {
         const Vortex &v = vortices[i];
         Dictionary d;
-        d["left_tip"] = v.left_tip; d["right_tip"] = v.right_tip; d["collocation_point"] = v.collocation_point; d["normal"] = v.normal; d["circulation"] = v.circulation; d["lift_vector"] = v.lift_vector; d["lift"] = v.lift; d["cl"] = v.cl; d["cl_vlm"] = v.cl_vlm; d["span"] = v.span;
+        d["left_tip"] = v.left_tip; d["right_tip"] = v.right_tip; d["collocation_point"] = v.collocation_point; d["normal"] = v.normal; d["circulation"] = v.circulation; d["lift_vector"] = v.lift_vector; d["lift"] = v.lift; d["cl"] = v.cl; d["cl_vlm"] = v.cl_vlm; d["span"] = v.span; d["alpha"] = v.alpha;
         result.push_back(d);
     }
     return result;
@@ -444,7 +450,7 @@ TypedArray<Dictionary> AeroSurface::get_vortices() const {
 TypedArray<Dictionary> AeroSurface::get_subsections() const {
     TypedArray<Dictionary> result;
     for (const auto& s : subsections) {
-        Dictionary d; d["area"] = s.area; d["chord"] = s.chord; d["transform"] = s.transform;
+        Dictionary d; d["area"] = s.area; d["chord"] = s.chord; d["transform"] = s.transform; d["alpha"] = s.alpha;
         result.push_back(d);
     }
     return result;

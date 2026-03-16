@@ -58,9 +58,13 @@ struct Vector3 {
 template<typename T>
 using Vector = std::vector<T>;
 
-inline double compute_aoa(const Vector3 &local_velocity)
+inline double compute_aoa(const Vector3 &v)
 {
-    return std::atan2(-local_velocity.y, -local_velocity.x);
+    // Standard Aerodynamic AoA: atan2(V_up, V_forward)
+    // Here we assume X is the chord axis (forward = +X) and Y is the lift axis (up = +Y).
+    // Note: If v is wind velocity, +X means wind from front, +Y means wind from below.
+    if (std::abs(v.x) < 1e-9 && std::abs(v.y) < 1e-9) return 0.0;
+    return std::atan2(v.y, v.x);
 }
 
 } // namespace aero
