@@ -36,6 +36,7 @@ protected:
     double segments_per_meter = 4.0;
     Vector3 wind_velocity = Vector3(20, 0, 0);
     bool debug_draw = true;
+    bool debug_solve_results = false;
     bool vlm_enabled = true;
     double debug_force_scale = 0.001; 
     double debug_vortex_scale = 0.5;
@@ -78,6 +79,9 @@ public:
 
     void set_debug_draw(bool p_debug);
     bool is_debug_draw() const;
+
+    void set_debug_solve_results(bool p_enabled);
+    bool is_debug_solve_results() const;
 
     void set_segments_per_meter(double p_segments);
     double get_segments_per_meter() const;

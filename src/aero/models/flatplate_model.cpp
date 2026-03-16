@@ -15,10 +15,9 @@ AeroOutput FlatPlateModel::compute(const AeroInput& in) {
     out.lift = cl * q * in.area;
     out.drag = cd * q * in.area;
 
-    // Convert lift/drag to local force vector (assuming alpha is in XY plane)
-    // Lift is perpendicular to velocity, drag is parallel
-    // Simple 2D approximation for now
-    out.force = Vector3(0, out.lift, -out.drag); 
+    // Convert lift/drag to local force vector (X=Chord, Y=Lift, Z=Span)
+    // Lift is perpendicular to velocity (approx Y), drag is parallel (approx -X)
+    out.force = Vector3(-out.drag, out.lift, 0); 
 
     return out;
 }

@@ -19,6 +19,8 @@ AeroSurface::~AeroSurface() {}
 void AeroSurface::_bind_methods() {
     ClassDB::bind_method(D_METHOD("set_debug_draw", "debug"), &AeroSurface::set_debug_draw);
     ClassDB::bind_method(D_METHOD("is_debug_draw"), &AeroSurface::is_debug_draw);
+    ClassDB::bind_method(D_METHOD("set_debug_solve_results", "enabled"), &AeroSurface::set_debug_solve_results);
+    ClassDB::bind_method(D_METHOD("is_debug_solve_results"), &AeroSurface::is_debug_solve_results);
     ClassDB::bind_method(D_METHOD("set_segments_per_meter", "segments"), &AeroSurface::set_segments_per_meter);
     ClassDB::bind_method(D_METHOD("get_segments_per_meter"), &AeroSurface::get_segments_per_meter);
     ClassDB::bind_method(D_METHOD("set_wind_velocity", "wind"), &AeroSurface::set_wind_velocity);
@@ -27,13 +29,16 @@ void AeroSurface::_bind_methods() {
     ClassDB::bind_method(D_METHOD("is_vlm_enabled"), &AeroSurface::is_vlm_enabled);
     ClassDB::bind_method(D_METHOD("set_debug_force_scale", "scale"), &AeroSurface::set_debug_force_scale);
     ClassDB::bind_method(D_METHOD("get_debug_force_scale"), &AeroSurface::get_debug_force_scale);
+    ClassDB::bind_method(D_METHOD("get_force_cache"), &AeroSurface::get_force_cache);
     ClassDB::bind_method(D_METHOD("_generate_subsections"), &AeroSurface::_generate_subsections);
 
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_draw"), "set_debug_draw", "is_debug_draw");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_solve_results"), "set_debug_solve_results", "is_debug_solve_results");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "segments_per_meter"), "set_segments_per_meter", "get_segments_per_meter");
     ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "wind_velocity"), "set_wind_velocity", "get_wind_velocity");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "vlm_enabled"), "set_vlm_enabled", "is_vlm_enabled");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "debug_force_scale"), "set_debug_force_scale", "get_debug_force_scale");
+    ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "current_force", PROPERTY_HINT_NONE, "", PROPERTY_USAGE_EDITOR | PROPERTY_USAGE_READ_ONLY), "", "get_force_cache");
 }
 
 void AeroSurface::set_debug_draw(bool p_debug) {
@@ -43,6 +48,9 @@ void AeroSurface::set_debug_draw(bool p_debug) {
 }
 
 bool AeroSurface::is_debug_draw() const { return debug_draw; }
+
+void AeroSurface::set_debug_solve_results(bool p_enabled) { debug_solve_results = p_enabled; }
+bool AeroSurface::is_debug_solve_results() const { return debug_solve_results; }
 
 void AeroSurface::set_segments_per_meter(double p_segments) {
     if (Math::is_equal_approx(segments_per_meter, p_segments)) return;
@@ -150,10 +158,9 @@ void AeroSurface::_update_vortices() {
         v.normal = (v.right_tip - v.left_tip).cross(v.collocation_point - v.left_tip).normalized();
 
         if (v.normal.dot(local_up) < 0) {
-            Vector3 temp = v.left_tip;
-            v.left_tip = v.right_tip;
-            v.right_tip = temp;
-            v.normal = (v.right_tip - v.left_tip).cross(v.collocation_point - v.left_tip).normalized();
+            // Fix: Do NOT swap vertices as it breaks VLM topology (left/right adjacency).
+            // Just flip the normal vector.
+            v.normal = -v.normal;
         }
 
         v.span = sub.area / sub.chord;
@@ -175,9 +182,9 @@ void AeroSurface::_solve_vlm() {
         panels.push_back(p);
     }
     Vector3 local_wind_node = get_global_transform().basis.xform_inv(wind_velocity);
-    aero::VLMModel::solve(panels, to_aero(local_wind_node));
+    aero::VLMModel::solve(panels, to_aero(local_wind_node), debug_solve_results);
 
-    if (panels.size() > 1) {
+    if (debug_solve_results && panels.size() > 1) {
         UtilityFunctions::print("AeroSurface [", get_name(), "] VLM Solve Results:");
         UtilityFunctions::print("  - Panel 0 Gamma: ", panels[0].circulation);
         UtilityFunctions::print("  - Panel N Gamma: ", panels[panels.size()-1].circulation);
@@ -297,7 +304,8 @@ Vector3 AeroSurface::compute_force(Variant p_state) {
 
         for (int i = 0; i < vortices.size(); i++) {
             Vortex &v = vortices.write[i];
-            Vector3 bound_vector = (v.right_tip - v.left_tip);
+            // Fix: Lift slope was inverted. Using left - right restores positive dCl/dAlpha.
+            Vector3 bound_vector = (v.left_tip - v.right_tip);
             // Standard Kutta-Joukowski: F = rho * (V x dl * Gamma)
             Vector3 force = local_wind_node.cross(bound_vector) * (rho * v.circulation);
             
