@@ -33,6 +33,20 @@ protected:
         Vector3 v3_4_right;
     };
 
+    struct VortexStructure {
+        Vector3 center;
+        double strength = 0.0;
+        Vector3 direction;
+        AABB bounding_box;
+        int segment_start = 0;
+        int segment_end = 0;
+    };
+
+    struct TrailingFilament {
+        Vector3 pos;
+        double strength = 0.0;
+    };
+
     Vector<SubSection> subsections;
     double segments_per_meter = 4.0;
     bool use_cosine_spacing = false;
@@ -40,6 +54,8 @@ protected:
     bool debug_draw = true;
     bool debug_solve_results = false;
     bool vlm_enabled = true;
+    bool debug_influence_draw = false;
+    double vortex_threshold_factor = 0.2;
     double debug_force_scale = 0.001; 
     double debug_vortex_scale = 0.5;
 
@@ -56,6 +72,8 @@ protected:
     };
 
     Vector<Vortex> vortices;
+    Vector<VortexStructure> wake_clusters;
+    Vector<TrailingFilament> trailing_filaments;
 
     MeshInstance3D *debug_mesh_instance = nullptr;
     Ref<ImmediateMesh> debug_mesh;
@@ -70,6 +88,7 @@ protected:
     void _generate_subsections();
     void _update_vortices();
     void _solve_vlm();
+    void _analyze_wake();
     void _update_debug_draw();
 
     Vector3 _calculate_induced_velocity(const Vector3 &p_point, const Vector3 &p_v1, const Vector3 &p_v2, double p_gamma) const;
@@ -84,6 +103,12 @@ public:
 
     void set_debug_solve_results(bool p_enabled);
     bool is_debug_solve_results() const;
+
+    void set_debug_influence_draw(bool p_enabled);
+    bool is_debug_influence_draw() const;
+
+    void set_vortex_threshold_factor(double p_factor);
+    double get_vortex_threshold_factor() const;
 
     void set_segments_per_meter(double p_segments);
     double get_segments_per_meter() const;

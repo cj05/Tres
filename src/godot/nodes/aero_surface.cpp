@@ -21,6 +21,10 @@ void AeroSurface::_bind_methods() {
     ClassDB::bind_method(D_METHOD("is_debug_draw"), &AeroSurface::is_debug_draw);
     ClassDB::bind_method(D_METHOD("set_debug_solve_results", "enabled"), &AeroSurface::set_debug_solve_results);
     ClassDB::bind_method(D_METHOD("is_debug_solve_results"), &AeroSurface::is_debug_solve_results);
+    ClassDB::bind_method(D_METHOD("set_debug_influence_draw", "enabled"), &AeroSurface::set_debug_influence_draw);
+    ClassDB::bind_method(D_METHOD("is_debug_influence_draw"), &AeroSurface::is_debug_influence_draw);
+    ClassDB::bind_method(D_METHOD("set_vortex_threshold_factor", "factor"), &AeroSurface::set_vortex_threshold_factor);
+    ClassDB::bind_method(D_METHOD("get_vortex_threshold_factor"), &AeroSurface::get_vortex_threshold_factor);
     ClassDB::bind_method(D_METHOD("set_segments_per_meter", "segments"), &AeroSurface::set_segments_per_meter);
     ClassDB::bind_method(D_METHOD("get_segments_per_meter"), &AeroSurface::get_segments_per_meter);
     ClassDB::bind_method(D_METHOD("set_use_cosine_spacing", "enabled"), &AeroSurface::set_use_cosine_spacing);
@@ -36,6 +40,8 @@ void AeroSurface::_bind_methods() {
 
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_draw"), "set_debug_draw", "is_debug_draw");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_solve_results"), "set_debug_solve_results", "is_debug_solve_results");
+    ADD_PROPERTY(PropertyInfo(Variant::BOOL, "debug_influence_draw"), "set_debug_influence_draw", "is_debug_influence_draw");
+    ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "vortex_threshold_factor"), "set_vortex_threshold_factor", "get_vortex_threshold_factor");
     ADD_PROPERTY(PropertyInfo(Variant::FLOAT, "segments_per_meter"), "set_segments_per_meter", "get_segments_per_meter");
     ADD_PROPERTY(PropertyInfo(Variant::BOOL, "use_cosine_spacing"), "set_use_cosine_spacing", "get_use_cosine_spacing");
     ADD_PROPERTY(PropertyInfo(Variant::VECTOR3, "wind_velocity"), "set_wind_velocity", "get_wind_velocity");
@@ -54,6 +60,12 @@ bool AeroSurface::is_debug_draw() const { return debug_draw; }
 
 void AeroSurface::set_debug_solve_results(bool p_enabled) { debug_solve_results = p_enabled; }
 bool AeroSurface::is_debug_solve_results() const { return debug_solve_results; }
+
+void AeroSurface::set_debug_influence_draw(bool p_enabled) { debug_influence_draw = p_enabled; }
+bool AeroSurface::is_debug_influence_draw() const { return debug_influence_draw; }
+
+void AeroSurface::set_vortex_threshold_factor(double p_factor) { vortex_threshold_factor = p_factor; }
+double AeroSurface::get_vortex_threshold_factor() const { return vortex_threshold_factor; }
 
 void AeroSurface::set_segments_per_meter(double p_segments) {
     if (Math::is_equal_approx(segments_per_meter, p_segments)) return;
@@ -211,12 +223,95 @@ void AeroSurface::_solve_vlm() {
 
     for (int i = 0; i < vortices.size(); i++) vortices.write[i].circulation = (double)panels[i].circulation;
 
-    if (false) {
-        UtilityFunctions::print("--- VLM Circulation Map [", get_name(), "] ---");
-        for (int i = 0; i < vortices.size(); i++) {
-            UtilityFunctions::print("  Panel ", i, ": ", vortices[i].circulation);
+    _analyze_wake();
+}
+
+void AeroSurface::_analyze_wake() {
+    trailing_filaments.clear();
+    wake_clusters.clear();
+    if (vortices.size() == 0) return;
+
+    // 1. Compute Shed Vorticity at each Joint
+    // For N panels, we have N+1 trailing filaments
+    // Leg 0: Left tip of panel 0
+    TrailingFilament f_start;
+    f_start.pos = vortices[0].left_tip;
+    f_start.strength = vortices[0].circulation;
+    trailing_filaments.push_back(f_start);
+
+    // Legs 1 to N-1: Joints between panels
+    for (int i = 0; i < vortices.size() - 1; i++) {
+        TrailingFilament f;
+        f.pos = (vortices[i].right_tip + vortices[i+1].left_tip) * 0.5;
+        f.strength = vortices[i+1].circulation - vortices[i].circulation;
+        trailing_filaments.push_back(f);
+    }
+
+    // Leg N: Right tip of last panel
+    TrailingFilament f_end;
+    f_end.pos = vortices[vortices.size() - 1].right_tip;
+    f_end.strength = -vortices[vortices.size() - 1].circulation;
+    trailing_filaments.push_back(f_end);
+
+    // 2. Identify Candidates and Cluster
+    double max_shed = 0.001;
+    for (const auto& f : trailing_filaments) max_shed = MAX(max_shed, Math::abs(f.strength));
+    double threshold = vortex_threshold_factor * max_shed;
+
+    int current_start = -1;
+    for (int i = 0; i < trailing_filaments.size(); i++) {
+        bool is_candidate = Math::abs(trailing_filaments[i].strength) > threshold;
+
+        if (is_candidate) {
+            if (current_start == -1) current_start = i;
+        } else {
+            if (current_start != -1) {
+                // End of cluster
+                VortexStructure vs;
+                vs.segment_start = current_start;
+                vs.segment_end = i - 1;
+                
+                Vector3 sum_pos;
+                double sum_strength = 0;
+                vs.bounding_box = AABB(trailing_filaments[current_start].pos, Vector3());
+
+                for (int k = current_start; k < i; k++) {
+                    double s = trailing_filaments[k].strength;
+                    sum_pos += trailing_filaments[k].pos * Math::abs(s);
+                    sum_strength += s;
+                    vs.bounding_box.expand_to(trailing_filaments[k].pos);
+                }
+
+                vs.strength = sum_strength;
+                vs.center = sum_pos / MAX(1e-6, Math::abs(sum_strength));
+                // Expand BBox slightly in wind direction
+                Vector3 wind_dir = get_global_transform().basis.xform_inv(wind_velocity).normalized();
+                vs.bounding_box.expand_to(vs.bounding_box.position + wind_dir * 2.0);
+
+                wake_clusters.push_back(vs);
+                current_start = -1;
+            }
         }
-        UtilityFunctions::print("------------------------------------------");
+    }
+    // Handle last cluster
+    if (current_start != -1) {
+        VortexStructure vs;
+        vs.segment_start = current_start;
+        vs.segment_end = trailing_filaments.size() - 1;
+        Vector3 sum_pos;
+        double sum_strength = 0;
+        vs.bounding_box = AABB(trailing_filaments[current_start].pos, Vector3());
+        for (int k = current_start; k < trailing_filaments.size(); k++) {
+            double s = trailing_filaments[k].strength;
+            sum_pos += trailing_filaments[k].pos * Math::abs(s);
+            sum_strength += s;
+            vs.bounding_box.expand_to(trailing_filaments[k].pos);
+        }
+        vs.strength = sum_strength;
+        vs.center = sum_pos / MAX(1e-6, Math::abs(sum_strength));
+        Vector3 wind_dir = get_global_transform().basis.xform_inv(wind_velocity).normalized();
+        vs.bounding_box.expand_to(vs.bounding_box.position + wind_dir * 2.0);
+        wake_clusters.push_back(vs);
     }
 }
 
@@ -262,12 +357,14 @@ void AeroSurface::_update_debug_draw() {
             debug_mesh->surface_add_vertex(v.left_tip);
             debug_mesh->surface_add_vertex(v.right_tip);
 
-            // 3. Horseshoe Trailing Legs (Fading Blue)
-            debug_mesh->surface_set_color(Color(0.1, 0.1, 0.5, 0.5));
-            debug_mesh->surface_add_vertex(v.left_tip);
-            debug_mesh->surface_add_vertex(v.left_tip + wind_dir * debug_vortex_scale * 10.0);
-            debug_mesh->surface_add_vertex(v.right_tip);
-            debug_mesh->surface_add_vertex(v.right_tip + wind_dir * debug_vortex_scale * 10.0);
+            // 3. Horseshoe Trailing Legs (Fading Blue) - Only if not using influence draw
+            if (!debug_influence_draw) {
+                debug_mesh->surface_set_color(Color(0.1, 0.1, 0.5, 0.5));
+                debug_mesh->surface_add_vertex(v.left_tip);
+                debug_mesh->surface_add_vertex(v.left_tip + wind_dir * debug_vortex_scale * 10.0);
+                debug_mesh->surface_add_vertex(v.right_tip);
+                debug_mesh->surface_add_vertex(v.right_tip + wind_dir * debug_vortex_scale * 10.0);
+            }
 
             // 4. Lift Vector (Cyan)
             debug_mesh->surface_set_color(Color(0, 1.0, 1.0));
@@ -293,6 +390,42 @@ void AeroSurface::_update_debug_draw() {
             debug_mesh->surface_add_vertex(sub_origin_local + (sub.drag_vector / sub.span) * debug_force_scale);
         }
     }
+
+    // Wake Analysis Drawing
+    if (vlm_enabled && debug_influence_draw) {
+        // A. Draw all trailing filaments (Vortex Sheet)
+        for (const auto& f : trailing_filaments) {
+            debug_mesh->surface_set_color(Color(0.3, 0.3, 0.6, 0.3)); // Faint blue
+            debug_mesh->surface_add_vertex(f.pos);
+            debug_mesh->surface_add_vertex(f.pos + wind_dir * 5.0);
+        }
+
+        // B. Draw Coherent Vortices (Thicker representation)
+        for (const auto& cluster : wake_clusters) {
+            Color c = (cluster.strength > 0) ? Color(1, 0.5, 0.2) : Color(0.2, 0.5, 1); // Orange/Blue
+            debug_mesh->surface_set_color(c);
+            
+            // Draw multiple lines for thickness
+            for (int k = cluster.segment_start; k <= cluster.segment_end; k++) {
+                debug_mesh->surface_add_vertex(trailing_filaments[k].pos);
+                debug_mesh->surface_add_vertex(trailing_filaments[k].pos + wind_dir * 5.0);
+            }
+
+            // C. Bounding Box
+            debug_mesh->surface_set_color(Color(1, 1, 1, 0.4)); // White transparent
+            AABB b = cluster.bounding_box;
+            // Draw AABB lines
+            Vector3 v[8] = {
+                b.position, b.position + Vector3(b.size.x, 0, 0),
+                b.position + Vector3(b.size.x, b.size.y, 0), b.position + Vector3(0, b.size.y, 0),
+                b.position + Vector3(0, 0, b.size.z), b.position + Vector3(b.size.x, 0, b.size.z),
+                b.position + b.size, b.position + Vector3(0, b.size.y, b.size.z)
+            };
+            int indices[24] = {0,1,1,2,2,3,3,0, 4,5,5,6,6,7,7,4, 0,4,1,5,2,6,3,7};
+            for (int j = 0; j < 24; j++) debug_mesh->surface_add_vertex(v[indices[j]]);
+        }
+    }
+
     debug_mesh->surface_end();
 }
 
@@ -317,6 +450,7 @@ Vector3 AeroSurface::compute_force(Variant p_state) {
     if (vlm_enabled) {
         _update_vortices();
         _solve_vlm();
+        _analyze_wake();
 
         for (int i = 0; i < vortices.size(); i++) {
             Vortex &v = vortices.write[i];
